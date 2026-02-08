@@ -156,25 +156,31 @@ BludProcessContextCreate(
 /* ============================================================================
  * BludProcessContextLookup
  *
- * Looks up a process context by PID. Returns NULL if not found.
- * The returned pointer is valid as long as the process context is not removed.
- * Caller should not hold the lock beyond immediate use.
+ * Looks up a process context by PID. Copies the context data to the
+ * caller-provided output buffer while holding the shared lock, preventing
+ * use-after-free if the entry is removed concurrently.
+ *
+ * Returns TRUE if found, FALSE if not found.
  * ============================================================================ */
-PBLUD_PROCESS_CONTEXT
+BOOLEAN
 BludProcessContextLookup(
-    _In_ ULONG ProcessId
+    _In_  HANDLE              ProcessId,
+    _Out_ PBLUD_PROCESS_CONTEXT OutContext
     )
 {
     ULONG                   bucket;
     PLIST_ENTRY             listEntry;
     PPROCESS_CONTEXT_ENTRY  entry;
-    PBLUD_PROCESS_CONTEXT   result = NULL;
+    BOOLEAN                 found = FALSE;
+    ULONG                   pid = (ULONG)(ULONG_PTR)ProcessId;
+
+    RtlZeroMemory(OutContext, sizeof(*OutContext));
 
     if (!g_ProcessTable.Initialized) {
-        return NULL;
+        return FALSE;
     }
 
-    bucket = BludpHashPid(ProcessId);
+    bucket = BludpHashPid(pid);
 
     FltAcquirePushLockShared(&g_ProcessTable.Locks[bucket]);
 
@@ -183,15 +189,59 @@ BludProcessContextLookup(
          listEntry = listEntry->Flink) {
 
         entry = CONTAINING_RECORD(listEntry, PROCESS_CONTEXT_ENTRY, ListEntry);
-        if (entry->Context.ProcessId == ProcessId) {
-            result = &entry->Context;
+        if (entry->Context.ProcessId == pid) {
+            RtlCopyMemory(OutContext, &entry->Context, sizeof(BLUD_PROCESS_CONTEXT));
+            found = TRUE;
             break;
         }
     }
 
     FltReleasePushLock(&g_ProcessTable.Locks[bucket]);
 
-    return result;
+    return found;
+}
+
+/* ============================================================================
+ * BludProcessContextSetFlags
+ *
+ * Atomically sets flag bits on a process context entry in-place while
+ * holding the bucket lock. Returns TRUE if the entry was found.
+ * ============================================================================ */
+BOOLEAN
+BludProcessContextSetFlags(
+    _In_ HANDLE ProcessId,
+    _In_ LONG   FlagsToSet
+    )
+{
+    ULONG                   bucket;
+    PLIST_ENTRY             listEntry;
+    PPROCESS_CONTEXT_ENTRY  entry;
+    BOOLEAN                 found = FALSE;
+    ULONG                   pid = (ULONG)(ULONG_PTR)ProcessId;
+
+    if (!g_ProcessTable.Initialized) {
+        return FALSE;
+    }
+
+    bucket = BludpHashPid(pid);
+
+    FltAcquirePushLockShared(&g_ProcessTable.Locks[bucket]);
+
+    for (listEntry = g_ProcessTable.Buckets[bucket].Flink;
+         listEntry != &g_ProcessTable.Buckets[bucket];
+         listEntry = listEntry->Flink) {
+
+        entry = CONTAINING_RECORD(listEntry, PROCESS_CONTEXT_ENTRY, ListEntry);
+        if (entry->Context.ProcessId == pid) {
+            InterlockedOr((volatile LONG*)&entry->Context.Flags, FlagsToSet);
+            found = TRUE;
+            break;
+        }
+    }
+
+    FltReleasePushLock(&g_ProcessTable.Locks[bucket]);
+
+    return found;
 }
 
 /* ============================================================================

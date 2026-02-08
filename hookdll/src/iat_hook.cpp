@@ -8,17 +8,22 @@
 static std::vector<IATHookEntry>    g_iatHooks;
 static CRITICAL_SECTION             g_iatLock;
 static BOOL                         g_iatInit = FALSE;
+static INIT_ONCE                    g_iatInitOnce = INIT_ONCE_STATIC_INIT;
 
 /* ============================================================================
- * Internal: Ensure IAT hook system is initialized
+ * Internal: Ensure IAT hook system is initialized (thread-safe via INIT_ONCE)
  * ============================================================================ */
+static BOOL CALLBACK IatInitCallback(PINIT_ONCE, PVOID, PVOID*)
+{
+    InitializeCriticalSection(&g_iatLock);
+    g_iatHooks.reserve(16);
+    g_iatInit = TRUE;
+    return TRUE;
+}
+
 static void EnsureInit()
 {
-    if (!g_iatInit) {
-        InitializeCriticalSection(&g_iatLock);
-        g_iatHooks.reserve(16);
-        g_iatInit = TRUE;
-    }
+    InitOnceExecuteOnce(&g_iatInitOnce, IatInitCallback, nullptr, nullptr);
 }
 
 /* ============================================================================

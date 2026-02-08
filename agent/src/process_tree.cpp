@@ -35,9 +35,10 @@ void ProcessTree::Initialize()
 
 void ProcessTree::Shutdown()
 {
-    AcquireSRWLockExclusive(&m_Lock);
-    m_Processes.clear();
-    ReleaseSRWLockExclusive(&m_Lock);
+    {
+        SrwExclusiveLock lock(m_Lock);
+        m_Processes.clear();
+    }
     LOG_INFO("ProcessTree", "Shut down");
 }
 
@@ -57,17 +58,17 @@ void ProcessTree::AddProcess(DWORD pid, DWORD ppid,
     node.creationTime = creationTime;
     node.iocScore = 0.0;
 
-    AcquireSRWLockExclusive(&m_Lock);
+    {
+        SrwExclusiveLock lock(m_Lock);
 
-    m_Processes[pid] = std::move(node);
+        m_Processes[pid] = std::move(node);
 
-    /* Register this process as a child of its parent */
-    auto parentIt = m_Processes.find(ppid);
-    if (parentIt != m_Processes.end()) {
-        parentIt->second.children.push_back(pid);
+        /* Register this process as a child of its parent */
+        auto parentIt = m_Processes.find(ppid);
+        if (parentIt != m_Processes.end()) {
+            parentIt->second.children.push_back(pid);
+        }
     }
-
-    ReleaseSRWLockExclusive(&m_Lock);
 }
 
 /* ============================================================================
@@ -75,7 +76,7 @@ void ProcessTree::AddProcess(DWORD pid, DWORD ppid,
  * ============================================================================ */
 void ProcessTree::RemoveProcess(DWORD pid)
 {
-    AcquireSRWLockExclusive(&m_Lock);
+    SrwExclusiveLock lock(m_Lock);
 
     auto it = m_Processes.find(pid);
     if (it != m_Processes.end()) {
@@ -101,8 +102,6 @@ void ProcessTree::RemoveProcess(DWORD pid)
 
         m_Processes.erase(it);
     }
-
-    ReleaseSRWLockExclusive(&m_Lock);
 }
 
 /* ============================================================================
@@ -110,13 +109,12 @@ void ProcessTree::RemoveProcess(DWORD pid)
  * ============================================================================ */
 bool ProcessTree::GetProcess(DWORD pid, ProcessNode& outNode) const
 {
-    AcquireSRWLockShared(&m_Lock);
+    SrwSharedLock lock(m_Lock);
     auto it = m_Processes.find(pid);
     bool found = (it != m_Processes.end());
     if (found) {
         outNode = it->second;
     }
-    ReleaseSRWLockShared(&m_Lock);
     return found;
 }
 
@@ -127,7 +125,7 @@ std::vector<ProcessNode> ProcessTree::GetAncestors(DWORD pid, int maxDepth) cons
 {
     std::vector<ProcessNode> result;
 
-    AcquireSRWLockShared(&m_Lock);
+    SrwSharedLock lock(m_Lock);
 
     DWORD current = pid;
     for (int i = 0; i < maxDepth; ++i) {
@@ -144,7 +142,6 @@ std::vector<ProcessNode> ProcessTree::GetAncestors(DWORD pid, int maxDepth) cons
         current = parentPid;
     }
 
-    ReleaseSRWLockShared(&m_Lock);
     return result;
 }
 
@@ -155,9 +152,8 @@ std::vector<ProcessNode> ProcessTree::GetDescendants(DWORD pid) const
 {
     std::vector<ProcessNode> result;
 
-    AcquireSRWLockShared(&m_Lock);
+    SrwSharedLock lock(m_Lock);
     CollectDescendants(pid, result);
-    ReleaseSRWLockShared(&m_Lock);
 
     return result;
 }
@@ -181,7 +177,7 @@ void ProcessTree::CollectDescendants(DWORD pid, std::vector<ProcessNode>& out) c
  * ============================================================================ */
 int ProcessTree::GetDepthFromExplorer(DWORD pid) const
 {
-    AcquireSRWLockShared(&m_Lock);
+    SrwSharedLock lock(m_Lock);
 
     int depth = 0;
     DWORD current = pid;
@@ -193,7 +189,6 @@ int ProcessTree::GetDepthFromExplorer(DWORD pid) const
 
         std::wstring name = ToLowerW(ExtractFilename(it->second.imagePath));
         if (name == L"explorer.exe") {
-            ReleaseSRWLockShared(&m_Lock);
             return depth;
         }
 
@@ -204,7 +199,6 @@ int ProcessTree::GetDepthFromExplorer(DWORD pid) const
         ++depth;
     }
 
-    ReleaseSRWLockShared(&m_Lock);
     return -1; /* explorer.exe not found in ancestry */
 }
 
@@ -240,13 +234,14 @@ std::vector<ProcessNode> ProcessTree::GetTopByScore(int count) const
 {
     std::vector<ProcessNode> all;
 
-    AcquireSRWLockShared(&m_Lock);
-    all.reserve(m_Processes.size());
-    for (auto& [pid, node] : m_Processes) {
-        (void)pid;
-        all.push_back(node);
+    {
+        SrwSharedLock lock(m_Lock);
+        all.reserve(m_Processes.size());
+        for (auto& [pid, node] : m_Processes) {
+            (void)pid;
+            all.push_back(node);
+        }
     }
-    ReleaseSRWLockShared(&m_Lock);
 
     /* Sort descending by IoC score */
     std::sort(all.begin(), all.end(),
@@ -265,12 +260,11 @@ std::vector<ProcessNode> ProcessTree::GetTopByScore(int count) const
  * ============================================================================ */
 void ProcessTree::UpdateScore(DWORD pid, double score)
 {
-    AcquireSRWLockExclusive(&m_Lock);
+    SrwExclusiveLock lock(m_Lock);
     auto it = m_Processes.find(pid);
     if (it != m_Processes.end()) {
         it->second.iocScore = score;
     }
-    ReleaseSRWLockExclusive(&m_Lock);
 }
 
 /* ============================================================================
@@ -278,10 +272,8 @@ void ProcessTree::UpdateScore(DWORD pid, double score)
  * ============================================================================ */
 size_t ProcessTree::GetProcessCount() const
 {
-    AcquireSRWLockShared(&m_Lock);
-    size_t count = m_Processes.size();
-    ReleaseSRWLockShared(&m_Lock);
-    return count;
+    SrwSharedLock lock(m_Lock);
+    return m_Processes.size();
 }
 
 } /* namespace blud */

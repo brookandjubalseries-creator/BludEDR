@@ -178,8 +178,8 @@ std::vector<YaraMatch> YaraScanner::ScanProcessMemory(DWORD pid) {
     std::vector<YaraMatch> matches;
 
 #ifdef BLUD_HAS_YARA
-    if (!m_initialized || !m_rules) return matches;
-    std::lock_guard<std::mutex> lock(m_scanMutex);
+    if (!m_initialized.load() || !m_rules) return matches;
+    std::lock_guard<std::recursive_mutex> lock(m_scanMutex);
 
     HANDLE hProcess = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, FALSE, pid);
     if (!hProcess) return matches;
@@ -232,8 +232,8 @@ std::vector<YaraMatch> YaraScanner::ScanFile(const std::wstring& filePath) {
     std::vector<YaraMatch> matches;
 
 #ifdef BLUD_HAS_YARA
-    if (!m_initialized || !m_rules) return matches;
-    std::lock_guard<std::mutex> lock(m_scanMutex);
+    if (!m_initialized.load() || !m_rules) return matches;
+    std::lock_guard<std::recursive_mutex> lock(m_scanMutex);
 
     /* Convert path to narrow for YARA */
     char narrowPath[MAX_PATH * 2];
@@ -261,7 +261,8 @@ std::vector<YaraMatch> YaraScanner::ScanBuffer(const BYTE* data, SIZE_T size, DW
     std::vector<YaraMatch> matches;
 
 #ifdef BLUD_HAS_YARA
-    if (!m_initialized || !m_rules) return matches;
+    if (!m_initialized.load() || !m_rules) return matches;
+    std::lock_guard<std::recursive_mutex> lock(m_scanMutex);
 
     ScanContext ctx;
     ctx.Matches = &matches;
@@ -274,6 +275,7 @@ std::vector<YaraMatch> YaraScanner::ScanBuffer(const BYTE* data, SIZE_T size, DW
 }
 
 void YaraScanner::SetCallback(YaraMatchCallback cb) {
+    std::lock_guard<std::recursive_mutex> lock(m_scanMutex);
     m_callback = std::move(cb);
 }
 

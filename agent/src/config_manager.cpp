@@ -77,13 +77,12 @@ bool ConfigManager::ParseBool(const std::string& s) const
  * ============================================================================ */
 bool ConfigManager::Load(const std::wstring& filePath)
 {
-    AcquireSRWLockExclusive(&m_Lock);
+    SrwExclusiveLock lock(m_Lock);
 
     /* Try to open the file */
     std::ifstream file(WideToUtf8(filePath));
     if (!file.is_open()) {
         /* Use defaults if no config file found */
-        ReleaseSRWLockExclusive(&m_Lock);
         return false;
     }
 
@@ -172,7 +171,6 @@ bool ConfigManager::Load(const std::wstring& filePath)
     }
 
     file.close();
-    ReleaseSRWLockExclusive(&m_Lock);
     return true;
 }
 
@@ -183,14 +181,12 @@ bool ConfigManager::IsWhitelisted(const std::wstring& processName) const
 {
     std::wstring lower = ToLowerW(processName);
 
-    AcquireSRWLockShared(&m_Lock);
+    SrwSharedLock lock(m_Lock);
     for (const auto& entry : m_Config.whitelistedProcesses) {
         if (ToLowerW(entry) == lower) {
-            ReleaseSRWLockShared(&m_Lock);
             return true;
         }
     }
-    ReleaseSRWLockShared(&m_Lock);
     return false;
 }
 

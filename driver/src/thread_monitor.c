@@ -39,7 +39,16 @@ BludThreadNotifyRoutine(
 
     threadEvent.TargetProcessId = targetPid;
     threadEvent.TargetThreadId  = (ULONG)(ULONG_PTR)ThreadId;
-    threadEvent.IsRemoteThread  = (callerPid != targetPid);
+    /*
+     * Only evaluate IsRemoteThread for creation events. During termination,
+     * the calling context may be the System process during teardown, which
+     * would falsely flag as a remote thread.
+     */
+    if (Create) {
+        threadEvent.IsRemoteThread = (callerPid != targetPid) ? TRUE : FALSE;
+    } else {
+        threadEvent.IsRemoteThread = FALSE;
+    }
     threadEvent.StartAddress    = NULL;
 
     /*

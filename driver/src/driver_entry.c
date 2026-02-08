@@ -380,6 +380,7 @@ BludpResolveLsassPid(
     ULONG bufferSize = 0;
     NTSTATUS status;
     PVOID buffer = NULL;
+    ULONG retries;
 
     status = ZwQuerySystemInformation(SystemProcessInformation, NULL, 0, &bufferSize);
     if (status != STATUS_INFO_LENGTH_MISMATCH || bufferSize == 0) {
@@ -387,26 +388,49 @@ BludpResolveLsassPid(
     }
 
     bufferSize += 4096;  /* Extra room for racing creates */
-    buffer = ExAllocatePool2(POOL_FLAG_NON_PAGED, bufferSize, BLUD_POOL_TAG);
+    buffer = ExAllocatePool2(POOL_FLAG_PAGED, bufferSize, BLUD_POOL_TAG);
     if (buffer == NULL) {
         return;
     }
 
-    status = ZwQuerySystemInformation(SystemProcessInformation, buffer, bufferSize, NULL);
+    /*
+     * Retry loop: the process list can grow between the size query
+     * and the actual fetch. Retry up to 3 times with a larger buffer.
+     */
+    for (retries = 0; retries < 3; retries++) {
+        status = ZwQuerySystemInformation(SystemProcessInformation, buffer, bufferSize, NULL);
+        if (NT_SUCCESS(status)) {
+            break;
+        }
+        if (status != STATUS_INFO_LENGTH_MISMATCH) {
+            ExFreePoolWithTag(buffer, BLUD_POOL_TAG);
+            return;
+        }
+        /* Buffer too small -- grow and retry */
+        ExFreePoolWithTag(buffer, BLUD_POOL_TAG);
+        bufferSize *= 2;
+        buffer = ExAllocatePool2(POOL_FLAG_PAGED, bufferSize, BLUD_POOL_TAG);
+        if (buffer == NULL) {
+            return;
+        }
+    }
+
     if (!NT_SUCCESS(status)) {
         ExFreePoolWithTag(buffer, BLUD_POOL_TAG);
         return;
     }
 
+    {
     PSYSTEM_PROCESS_INFORMATION procInfo = (PSYSTEM_PROCESS_INFORMATION)buffer;
     UNICODE_STRING lsassName = RTL_CONSTANT_STRING(L"lsass.exe");
 
     for (;;) {
         if (procInfo->ImageName.Buffer != NULL &&
             RtlEqualUnicodeString(&procInfo->ImageName, &lsassName, TRUE)) {
-            g_Globals.LsassPid = (ULONG)(ULONG_PTR)procInfo->UniqueProcessId;
+            InterlockedExchange((volatile LONG*)&g_Globals.LsassPid,
+                (LONG)(ULONG)(ULONG_PTR)procInfo->UniqueProcessId);
             KdPrintEx((DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
-                "BludEDR: LSASS PID = %lu\n", g_Globals.LsassPid));
+                "BludEDR: LSASS PID = %lu\n", (ULONG)(ULONG_PTR)procInfo->UniqueProcessId));
             break;
         }
         if (procInfo->NextEntryOffset == 0) {
@@ -415,6 +439,7 @@ BludpResolveLsassPid(
         procInfo = (PSYSTEM_PROCESS_INFORMATION)
             ((ULONG_PTR)procInfo + procInfo->NextEntryOffset);
     }
+    } /* end block scope */
 
     ExFreePoolWithTag(buffer, BLUD_POOL_TAG);
 }

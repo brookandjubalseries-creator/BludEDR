@@ -38,9 +38,10 @@ void AlertManager::Initialize()
 
 void AlertManager::Shutdown()
 {
-    AcquireSRWLockExclusive(&m_Lock);
-    m_AlertHistory.clear();
-    ReleaseSRWLockExclusive(&m_Lock);
+    {
+        SrwExclusiveLock lock(m_Lock);
+        m_AlertHistory.clear();
+    }
     LOG_INFO("AlertManager", "Shut down");
 }
 
@@ -72,12 +73,13 @@ void AlertManager::ProcessAlert(DWORD pid, double score, ULONG ruleId,
     }
 
     /* Store in history */
-    AcquireSRWLockExclusive(&m_Lock);
-    m_AlertHistory.push_back(alert);
-    while (m_AlertHistory.size() > MAX_ALERT_HISTORY) {
-        m_AlertHistory.pop_front();
+    {
+        SrwExclusiveLock lock(m_Lock);
+        m_AlertHistory.push_back(alert);
+        while (m_AlertHistory.size() > MAX_ALERT_HISTORY) {
+            m_AlertHistory.pop_front();
+        }
     }
-    ReleaseSRWLockExclusive(&m_Lock);
 
     m_TotalAlerts.fetch_add(1, std::memory_order_relaxed);
 
@@ -182,7 +184,7 @@ std::vector<Alert> AlertManager::GetRecentAlerts(int count) const
 {
     std::vector<Alert> result;
 
-    AcquireSRWLockShared(&m_Lock);
+    SrwSharedLock lock(m_Lock);
 
     int total = static_cast<int>(m_AlertHistory.size());
     int start = (total > count) ? (total - count) : 0;
@@ -191,7 +193,6 @@ std::vector<Alert> AlertManager::GetRecentAlerts(int count) const
         result.push_back(m_AlertHistory[i]);
     }
 
-    ReleaseSRWLockShared(&m_Lock);
     return result;
 }
 

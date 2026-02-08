@@ -115,6 +115,15 @@ BludObPreOperationCallback(
     }
 
     /*
+     * Defensive IRQL check: SeLocateProcessImageName (called via
+     * BludpGetProcessImageName) accesses paged pool and cannot safely
+     * run above APC_LEVEL.
+     */
+    if (KeGetCurrentIrql() > APC_LEVEL) {
+        return OB_PREOP_SUCCESS;
+    }
+
+    /*
      * Determine which bits to strip.
      */
     if (OperationInformation->Operation == OB_OPERATION_HANDLE_CREATE) {

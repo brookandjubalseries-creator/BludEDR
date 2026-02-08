@@ -65,8 +65,8 @@ BludEventQueueInitialize(
     Queue->Capacity = Capacity;
     Queue->DroppedCount = 0;
 
-    /* Initialize the event as auto-reset (SynchronizationEvent) */
-    KeInitializeEvent(&Queue->DataReadyEvent, SynchronizationEvent, FALSE);
+    /* Initialize the event as manual-reset (NotificationEvent) so events are not missed */
+    KeInitializeEvent(&Queue->DataReadyEvent, NotificationEvent, FALSE);
 
     KdPrintEx((DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
         "BludEDR: Event queue initialized, capacity=%lu, entry_size=%lu\n",
@@ -162,7 +162,8 @@ BludEnqueueEvent(
              * gracefully.
              */
             if (InterlockedCompareExchange(&slot->InUse, SLOT_WRITING, SLOT_FREE) != SLOT_FREE) {
-                /* Slot was not free -- another producer or stale entry */
+                /* Slot was not free -- force it back to free to prevent consumer spin-wait */
+                InterlockedExchange(&slot->InUse, SLOT_FREE);
                 InterlockedIncrement(&Queue->DroppedCount);
                 return FALSE;
             }
@@ -258,6 +259,11 @@ BludDequeueEvent(
             if (slot->DataSize <= BufferSize && slot->DataSize > 0) {
                 RtlCopyMemory(Buffer, slot->Data, slot->DataSize);
                 *BytesCopied = slot->DataSize;
+            } else if (slot->DataSize > BufferSize) {
+                /* Event too large for caller buffer -- log and count drop */
+                DbgPrint("BludEDR: Dequeue drop - slot DataSize %lu > BufferSize %lu\n",
+                    slot->DataSize, BufferSize);
+                InterlockedIncrement(&Queue->DroppedCount);
             }
 
             /* Transition SLOT_READY -> SLOT_FREE */

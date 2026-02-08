@@ -49,19 +49,16 @@ BludpHandleTerminateProcess(
     CLIENT_ID clientId;
     OBJECT_ATTRIBUTES objAttr;
 
+    /* Do not allow terminating critical system processes */
+    if (TargetPid == 4 || TargetPid == 0) {
+        return STATUS_ACCESS_DENIED;
+    }
+
     status = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)TargetPid, &process);
     if (!NT_SUCCESS(status)) {
         return status;
     }
 
-    /* Do not allow terminating critical system processes */
-    {
-        ULONG pid = TargetPid;
-        if (pid == 4 || pid == 0) {
-            ObDereferenceObject(process);
-            return STATUS_ACCESS_DENIED;
-        }
-    }
 
     /* Open a handle to the process for termination */
     clientId.UniqueProcess = (HANDLE)(ULONG_PTR)TargetPid;
@@ -382,13 +379,14 @@ BludCommPortMessageNotify(
 
     case CMD_QUERY_PROCESS_INFO:
         {
-            PBLUD_PROCESS_CONTEXT ctx = BludProcessContextLookup(command->TargetProcessId);
-            if (ctx != NULL) {
+            BLUD_PROCESS_CONTEXT ctx;
+            if (BludProcessContextLookup(
+                    (HANDLE)(ULONG_PTR)command->TargetProcessId, &ctx)) {
                 reply.Status = STATUS_SUCCESS;
                 /* Copy process flags into reply data */
                 if (OutputBufferLength >= sizeof(SENTINEL_REPLY)) {
                     reply.DataSize = sizeof(ULONG);
-                    RtlCopyMemory(reply.Data, &ctx->Flags, sizeof(ULONG));
+                    RtlCopyMemory(reply.Data, &ctx.Flags, sizeof(ULONG));
                 }
             } else {
                 reply.Status = STATUS_NOT_FOUND;
@@ -398,9 +396,9 @@ BludCommPortMessageNotify(
 
     case CMD_SET_PROTECTION:
         {
-            PBLUD_PROCESS_CONTEXT ctx = BludProcessContextLookup(command->TargetProcessId);
-            if (ctx != NULL) {
-                ctx->Flags |= PROCESS_FLAG_PROTECTED;
+            if (BludProcessContextSetFlags(
+                    (HANDLE)(ULONG_PTR)command->TargetProcessId,
+                    PROCESS_FLAG_PROTECTED)) {
                 reply.Status = STATUS_SUCCESS;
             } else {
                 reply.Status = STATUS_NOT_FOUND;
@@ -443,7 +441,7 @@ BludCommWorkerThread(
 {
     NTSTATUS            status;
     LARGE_INTEGER       timeout;
-    UCHAR               eventBuffer[sizeof(SENTINEL_REGISTRY_EVENT)]; /* Largest event */
+    PUCHAR              eventBuffer;
     ULONG               bytesCopied;
     SENTINEL_MESSAGE    message;
     ULONG               replyLength;
@@ -453,6 +451,23 @@ BludCommWorkerThread(
     KdPrintEx((DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
         "BludEDR: Worker thread started\n"));
 
+    /*
+     * Allocate event buffer from pool since SENTINEL_MAX_EVENT can be large
+     * (>9KB due to process events with command lines).
+     */
+    eventBuffer = (PUCHAR)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        sizeof(SENTINEL_MAX_EVENT),
+        BLUD_POOL_TAG
+        );
+
+    if (eventBuffer == NULL) {
+        KdPrintEx((DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+            "BludEDR: Worker thread failed to allocate event buffer\n"));
+        PsTerminateSystemThread(STATUS_INSUFFICIENT_RESOURCES);
+        return;
+    }
+
     /* 500ms timeout for waiting on queue events */
     timeout.QuadPart = -5000000LL;  /* 500ms in 100ns units, negative = relative */
 
@@ -461,6 +476,9 @@ BludCommWorkerThread(
          * Wait for the data-ready event with a timeout.
          * The timeout ensures we check the shutdown flag periodically.
          */
+        /* Clear the event before waiting (manual-reset event pattern) */
+        KeClearEvent(&g_Globals.EventQueue.DataReadyEvent);
+
         status = KeWaitForSingleObject(
             &g_Globals.EventQueue.DataReadyEvent,
             Executive,
@@ -479,7 +497,7 @@ BludCommWorkerThread(
 
             if (!BludDequeueEvent(&g_Globals.EventQueue,
                                    eventBuffer,
-                                   sizeof(eventBuffer),
+                                   sizeof(SENTINEL_MAX_EVENT),
                                    &bytesCopied)) {
                 /* Queue is empty */
                 break;
@@ -511,6 +529,11 @@ BludCommWorkerThread(
                 LARGE_INTEGER sendTimeout;
                 sendTimeout.QuadPart = -30000000LL;  /* 3 seconds */
 
+            /* Check shutdown flag immediately before sending */
+            if (g_Globals.CommPort.ShutdownWorker) {
+                break;
+            }
+
                 status = FltSendMessage(
                     g_Globals.FilterHandle,
                     &g_Globals.CommPort.ClientPort,
@@ -537,6 +560,8 @@ BludCommWorkerThread(
 
     KdPrintEx((DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
         "BludEDR: Worker thread exiting\n"));
+
+    ExFreePoolWithTag(eventBuffer, BLUD_POOL_TAG);
 
     PsTerminateSystemThread(STATUS_SUCCESS);
 }

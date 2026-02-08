@@ -19,7 +19,7 @@
 /* ============================================================================
  * BludAllocateUnicodeString
  *
- * Allocates a buffer for a UNICODE_STRING from nonpaged pool.
+ * Allocates a buffer for a UNICODE_STRING from paged pool.
  * The Length is set to 0; MaximumLength is set to the requested size.
  * ============================================================================ */
 NTSTATUS
@@ -38,8 +38,9 @@ BludAllocateUnicodeString(
         return STATUS_INVALID_PARAMETER;
     }
 
+    /* Use paged pool since all callers run at PASSIVE_LEVEL or APC_LEVEL */
     String->Buffer = (PWCH)ExAllocatePool2(
-        POOL_FLAG_NON_PAGED,
+        POOL_FLAG_PAGED,
         MaximumLength,
         BLUD_POOL_TAG
         );
@@ -103,6 +104,11 @@ BludCopyUnicodeString(
         Destination->Length         = 0;
         Destination->MaximumLength = 0;
         return STATUS_SUCCESS;
+    }
+
+    /* Guard against USHORT overflow */
+    if (Source->Length > (MAXUSHORT - sizeof(WCHAR))) {
+        return STATUS_BUFFER_OVERFLOW;
     }
 
     /* Allocate enough space for the string plus a null terminator */

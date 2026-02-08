@@ -51,6 +51,7 @@ private:
     SERVICE_STATUS          m_ServiceStatus;
     SERVICE_STATUS_HANDLE   m_StatusHandle;
     HANDLE                  m_ShutdownEvent;
+    DWORD                   m_CheckPoint;
 
     static ServiceController* s_Instance;
 };

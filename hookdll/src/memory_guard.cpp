@@ -40,6 +40,7 @@ static const BYTE POP_REGS[] = { 0x58, 0x59, 0x5A, 0x5B, 0x5E, 0x5F };
 
 static HANDLE               g_hScanThread = nullptr;
 static std::atomic<bool>    g_memGuardRunning{false};
+static HANDLE               g_memGuardShutdownEvent = NULL;
 
 /* Track already-reported regions to avoid spamming */
 static std::unordered_map<ULONG_PTR, ULONGLONG>* g_pReportedRegions = nullptr;
@@ -119,7 +120,7 @@ static BOOL ShouldReport(ULONG_PTR baseAddr)
 static DWORD WINAPI MemoryGuardThread(LPVOID /*param*/)
 {
     while (g_memGuardRunning.load()) {
-        Sleep(MEMGUARD_SCAN_INTERVAL);
+        WaitForSingleObject(g_memGuardShutdownEvent, MEMGUARD_SCAN_INTERVAL);
 
         if (!g_memGuardRunning.load()) break;
 
@@ -136,6 +137,12 @@ static DWORD WINAPI MemoryGuardThread(LPVOID /*param*/)
                     reinterpret_cast<PVOID>(addr), &mbi, sizeof(mbi));
 
                 if (result == 0) break;
+
+                /* Guard against zero RegionSize to prevent infinite loop */
+                if (mbi.RegionSize == 0) {
+                    addr += 0x1000;
+                    continue;
+                }
 
                 /* Look for MEM_PRIVATE + PAGE_EXECUTE_READWRITE */
                 if (mbi.State == MEM_COMMIT &&
@@ -204,12 +211,15 @@ BOOL MemoryGuard_Start()
     g_pReportedRegions = new (std::nothrow) std::unordered_map<ULONG_PTR, ULONGLONG>();
     if (!g_pReportedRegions) return FALSE;
 
+    g_memGuardShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
     g_memGuardRunning.store(true);
     g_hScanThread = CreateThread(nullptr, 0, MemoryGuardThread, nullptr, 0, nullptr);
     if (!g_hScanThread) {
         g_memGuardRunning.store(false);
         delete g_pReportedRegions;
         g_pReportedRegions = nullptr;
+        CloseHandle(g_memGuardShutdownEvent);
+        g_memGuardShutdownEvent = NULL;
         DeleteCriticalSection(&g_reportedLock);
         return FALSE;
     }
@@ -225,6 +235,7 @@ void MemoryGuard_Stop()
     if (!g_memGuardRunning.load()) return;
 
     g_memGuardRunning.store(false);
+    if (g_memGuardShutdownEvent) SetEvent(g_memGuardShutdownEvent);
 
     if (g_hScanThread) {
         WaitForSingleObject(g_hScanThread, 5000);
@@ -232,10 +243,16 @@ void MemoryGuard_Stop()
         g_hScanThread = nullptr;
     }
 
+    if (g_memGuardShutdownEvent) {
+        CloseHandle(g_memGuardShutdownEvent);
+        g_memGuardShutdownEvent = NULL;
+    }
+
     EnterCriticalSection(&g_reportedLock);
     delete g_pReportedRegions;
     g_pReportedRegions = nullptr;
     LeaveCriticalSection(&g_reportedLock);
 
+    Sleep(10);
     DeleteCriticalSection(&g_reportedLock);
 }

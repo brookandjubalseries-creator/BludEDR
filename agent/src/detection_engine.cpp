@@ -39,9 +39,10 @@ void DetectionEngine::Initialize()
 
 void DetectionEngine::Shutdown()
 {
-    AcquireSRWLockExclusive(&m_Lock);
-    m_Rules.clear();
-    ReleaseSRWLockExclusive(&m_Lock);
+    {
+        SrwExclusiveLock lock(m_Lock);
+        m_Rules.clear();
+    }
     LOG_INFO("DetectionEngine", "Shut down");
 }
 
@@ -72,9 +73,8 @@ void DetectionEngine::OnRuleMatch(const DetectionRule& rule, DWORD pid, const st
  * ============================================================================ */
 void DetectionEngine::AddRule(DetectionRule rule)
 {
-    AcquireSRWLockExclusive(&m_Lock);
+    SrwExclusiveLock lock(m_Lock);
     m_Rules.push_back(std::move(rule));
-    ReleaseSRWLockExclusive(&m_Lock);
 }
 
 /* ============================================================================
@@ -344,23 +344,29 @@ void DetectionEngine::RegisterBuiltinRules()
  * ============================================================================ */
 void DetectionEngine::EvaluateProcessEvent(const SENTINEL_PROCESS_EVENT& evt)
 {
-    AcquireSRWLockShared(&m_Lock);
+    struct Match { DetectionRule rule; std::string detail; };
+    std::vector<Match> matches;
 
-    for (const auto& rule : m_Rules) {
-        if (rule.processEval) {
-            try {
-                if (rule.processEval(evt)) {
-                    std::string detail = "Image: " + WideToUtf8(ExtractFilename(evt.ImagePath)) +
-                                         ", CmdLine: " + WideToUtf8(std::wstring(evt.CommandLine, wcsnlen(evt.CommandLine, 256)));
-                    OnRuleMatch(rule, evt.Header.ProcessId, detail);
+    {
+        SrwSharedLock lock(m_Lock);
+        for (const auto& rule : m_Rules) {
+            if (rule.processEval) {
+                try {
+                    if (rule.processEval(evt)) {
+                        std::string detail = "Image: " + WideToUtf8(ExtractFilename(evt.ImagePath)) +
+                                             ", CmdLine: " + WideToUtf8(std::wstring(evt.CommandLine, wcsnlen(evt.CommandLine, _countof(evt.CommandLine))));
+                        matches.push_back({rule, std::move(detail)});
+                    }
+                } catch (...) {
+                    LOG_ERROR("DetectionEngine", "Exception in processEval rule " + std::to_string(rule.ruleId));
                 }
-            } catch (...) {
-                LOG_ERROR("DetectionEngine", "Exception in processEval rule " + std::to_string(rule.ruleId));
             }
         }
     }
 
-    ReleaseSRWLockShared(&m_Lock);
+    for (const auto& m : matches) {
+        OnRuleMatch(m.rule, evt.Header.ProcessId, m.detail);
+    }
 }
 
 /* ============================================================================
@@ -368,23 +374,29 @@ void DetectionEngine::EvaluateProcessEvent(const SENTINEL_PROCESS_EVENT& evt)
  * ============================================================================ */
 void DetectionEngine::EvaluateThreadEvent(const SENTINEL_THREAD_EVENT& evt)
 {
-    AcquireSRWLockShared(&m_Lock);
+    struct Match { DetectionRule rule; std::string detail; };
+    std::vector<Match> matches;
 
-    for (const auto& rule : m_Rules) {
-        if (rule.threadEval) {
-            try {
-                if (rule.threadEval(evt)) {
-                    std::string detail = "TargetPID=" + std::to_string(evt.TargetProcessId) +
-                                         ", Remote=" + (evt.IsRemoteThread ? "true" : "false");
-                    OnRuleMatch(rule, evt.Header.ProcessId, detail);
+    {
+        SrwSharedLock lock(m_Lock);
+        for (const auto& rule : m_Rules) {
+            if (rule.threadEval) {
+                try {
+                    if (rule.threadEval(evt)) {
+                        std::string detail = "TargetPID=" + std::to_string(evt.TargetProcessId) +
+                                             ", Remote=" + (evt.IsRemoteThread ? "true" : "false");
+                        matches.push_back({rule, std::move(detail)});
+                    }
+                } catch (...) {
+                    LOG_ERROR("DetectionEngine", "Exception in threadEval rule " + std::to_string(rule.ruleId));
                 }
-            } catch (...) {
-                LOG_ERROR("DetectionEngine", "Exception in threadEval rule " + std::to_string(rule.ruleId));
             }
         }
     }
 
-    ReleaseSRWLockShared(&m_Lock);
+    for (const auto& m : matches) {
+        OnRuleMatch(m.rule, evt.Header.ProcessId, m.detail);
+    }
 }
 
 /* ============================================================================
@@ -392,22 +404,28 @@ void DetectionEngine::EvaluateThreadEvent(const SENTINEL_THREAD_EVENT& evt)
  * ============================================================================ */
 void DetectionEngine::EvaluateImageEvent(const SENTINEL_IMAGE_EVENT& evt)
 {
-    AcquireSRWLockShared(&m_Lock);
+    struct Match { DetectionRule rule; std::string detail; };
+    std::vector<Match> matches;
 
-    for (const auto& rule : m_Rules) {
-        if (rule.imageEval) {
-            try {
-                if (rule.imageEval(evt)) {
-                    std::string detail = "Module: " + WideToUtf8(ExtractFilename(evt.ImageName));
-                    OnRuleMatch(rule, evt.Header.ProcessId, detail);
+    {
+        SrwSharedLock lock(m_Lock);
+        for (const auto& rule : m_Rules) {
+            if (rule.imageEval) {
+                try {
+                    if (rule.imageEval(evt)) {
+                        std::string detail = "Module: " + WideToUtf8(ExtractFilename(evt.ImageName));
+                        matches.push_back({rule, std::move(detail)});
+                    }
+                } catch (...) {
+                    LOG_ERROR("DetectionEngine", "Exception in imageEval rule " + std::to_string(rule.ruleId));
                 }
-            } catch (...) {
-                LOG_ERROR("DetectionEngine", "Exception in imageEval rule " + std::to_string(rule.ruleId));
             }
         }
     }
 
-    ReleaseSRWLockShared(&m_Lock);
+    for (const auto& m : matches) {
+        OnRuleMatch(m.rule, evt.Header.ProcessId, m.detail);
+    }
 }
 
 /* ============================================================================
@@ -415,23 +433,29 @@ void DetectionEngine::EvaluateImageEvent(const SENTINEL_IMAGE_EVENT& evt)
  * ============================================================================ */
 void DetectionEngine::EvaluateFileEvent(const SENTINEL_FILE_EVENT& evt)
 {
-    AcquireSRWLockShared(&m_Lock);
+    struct Match { DetectionRule rule; std::string detail; };
+    std::vector<Match> matches;
 
-    for (const auto& rule : m_Rules) {
-        if (rule.fileEval) {
-            try {
-                if (rule.fileEval(evt)) {
-                    std::string detail = "File: " + WideToUtf8(ExtractFilename(evt.FileName)) +
-                                         ", Ext: " + WideToUtf8(evt.Extension);
-                    OnRuleMatch(rule, evt.Header.ProcessId, detail);
+    {
+        SrwSharedLock lock(m_Lock);
+        for (const auto& rule : m_Rules) {
+            if (rule.fileEval) {
+                try {
+                    if (rule.fileEval(evt)) {
+                        std::string detail = "File: " + WideToUtf8(ExtractFilename(evt.FileName)) +
+                                             ", Ext: " + WideToUtf8(evt.Extension);
+                        matches.push_back({rule, std::move(detail)});
+                    }
+                } catch (...) {
+                    LOG_ERROR("DetectionEngine", "Exception in fileEval rule " + std::to_string(rule.ruleId));
                 }
-            } catch (...) {
-                LOG_ERROR("DetectionEngine", "Exception in fileEval rule " + std::to_string(rule.ruleId));
             }
         }
     }
 
-    ReleaseSRWLockShared(&m_Lock);
+    for (const auto& m : matches) {
+        OnRuleMatch(m.rule, evt.Header.ProcessId, m.detail);
+    }
 }
 
 /* ============================================================================
@@ -439,23 +463,29 @@ void DetectionEngine::EvaluateFileEvent(const SENTINEL_FILE_EVENT& evt)
  * ============================================================================ */
 void DetectionEngine::EvaluateRegistryEvent(const SENTINEL_REGISTRY_EVENT& evt)
 {
-    AcquireSRWLockShared(&m_Lock);
+    struct Match { DetectionRule rule; std::string detail; };
+    std::vector<Match> matches;
 
-    for (const auto& rule : m_Rules) {
-        if (rule.registryEval) {
-            try {
-                if (rule.registryEval(evt)) {
-                    std::string detail = "Key: " + WideToUtf8(std::wstring(evt.KeyName, wcsnlen(evt.KeyName, 256))) +
-                                         ", Value: " + WideToUtf8(std::wstring(evt.ValueName, wcsnlen(evt.ValueName, 128)));
-                    OnRuleMatch(rule, evt.Header.ProcessId, detail);
+    {
+        SrwSharedLock lock(m_Lock);
+        for (const auto& rule : m_Rules) {
+            if (rule.registryEval) {
+                try {
+                    if (rule.registryEval(evt)) {
+                        std::string detail = "Key: " + WideToUtf8(std::wstring(evt.KeyName, wcsnlen(evt.KeyName, _countof(evt.KeyName)))) +
+                                             ", Value: " + WideToUtf8(std::wstring(evt.ValueName, wcsnlen(evt.ValueName, _countof(evt.ValueName))));
+                        matches.push_back({rule, std::move(detail)});
+                    }
+                } catch (...) {
+                    LOG_ERROR("DetectionEngine", "Exception in registryEval rule " + std::to_string(rule.ruleId));
                 }
-            } catch (...) {
-                LOG_ERROR("DetectionEngine", "Exception in registryEval rule " + std::to_string(rule.ruleId));
             }
         }
     }
 
-    ReleaseSRWLockShared(&m_Lock);
+    for (const auto& m : matches) {
+        OnRuleMatch(m.rule, evt.Header.ProcessId, m.detail);
+    }
 }
 
 /* ============================================================================
@@ -463,25 +493,31 @@ void DetectionEngine::EvaluateRegistryEvent(const SENTINEL_REGISTRY_EVENT& evt)
  * ============================================================================ */
 void DetectionEngine::EvaluateObjectEvent(const SENTINEL_OBJECT_EVENT& evt)
 {
-    AcquireSRWLockShared(&m_Lock);
+    struct Match { DetectionRule rule; std::string detail; };
+    std::vector<Match> matches;
 
-    for (const auto& rule : m_Rules) {
-        if (rule.objectEval) {
-            try {
-                if (rule.objectEval(evt)) {
-                    std::string detail = "TargetPID=" + std::to_string(evt.TargetProcessId) +
-                                         ", Target: " + WideToUtf8(ExtractFilename(evt.TargetImageName)) +
-                                         ", Access=0x" +
-                                         ([&]() { std::ostringstream o; o << std::hex << evt.DesiredAccess; return o.str(); })();
-                    OnRuleMatch(rule, evt.Header.ProcessId, detail);
+    {
+        SrwSharedLock lock(m_Lock);
+        for (const auto& rule : m_Rules) {
+            if (rule.objectEval) {
+                try {
+                    if (rule.objectEval(evt)) {
+                        std::string detail = "TargetPID=" + std::to_string(evt.TargetProcessId) +
+                                             ", Target: " + WideToUtf8(ExtractFilename(evt.TargetImageName)) +
+                                             ", Access=0x" +
+                                             ([&]() { std::ostringstream o; o << std::hex << evt.DesiredAccess; return o.str(); })();
+                        matches.push_back({rule, std::move(detail)});
+                    }
+                } catch (...) {
+                    LOG_ERROR("DetectionEngine", "Exception in objectEval rule " + std::to_string(rule.ruleId));
                 }
-            } catch (...) {
-                LOG_ERROR("DetectionEngine", "Exception in objectEval rule " + std::to_string(rule.ruleId));
             }
         }
     }
 
-    ReleaseSRWLockShared(&m_Lock);
+    for (const auto& m : matches) {
+        OnRuleMatch(m.rule, evt.Header.ProcessId, m.detail);
+    }
 }
 
 /* ============================================================================
@@ -489,30 +525,36 @@ void DetectionEngine::EvaluateObjectEvent(const SENTINEL_OBJECT_EVENT& evt)
  * ============================================================================ */
 void DetectionEngine::EvaluateMemoryEvent(const SENTINEL_MEMORY_EVENT& evt)
 {
-    AcquireSRWLockShared(&m_Lock);
+    struct Match { DetectionRule rule; std::string detail; };
+    std::vector<Match> matches;
 
-    for (const auto& rule : m_Rules) {
-        if (rule.memoryEval) {
-            try {
-                if (rule.memoryEval(evt)) {
-                    std::string detail = "Addr=0x" +
-                        ([&]() { std::ostringstream o; o << std::hex << (uintptr_t)evt.BaseAddress; return o.str(); })() +
-                        ", OldProt=0x" +
-                        ([&]() { std::ostringstream o; o << std::hex << evt.OldProtect; return o.str(); })() +
-                        ", NewProt=0x" +
-                        ([&]() { std::ostringstream o; o << std::hex << evt.NewProtect; return o.str(); })();
-                    if (evt.Details[0] != L'\0') {
-                        detail += ", Detail: " + WideToUtf8(evt.Details);
+    {
+        SrwSharedLock lock(m_Lock);
+        for (const auto& rule : m_Rules) {
+            if (rule.memoryEval) {
+                try {
+                    if (rule.memoryEval(evt)) {
+                        std::string detail = "Addr=0x" +
+                            ([&]() { std::ostringstream o; o << std::hex << (uintptr_t)evt.BaseAddress; return o.str(); })() +
+                            ", OldProt=0x" +
+                            ([&]() { std::ostringstream o; o << std::hex << evt.OldProtect; return o.str(); })() +
+                            ", NewProt=0x" +
+                            ([&]() { std::ostringstream o; o << std::hex << evt.NewProtect; return o.str(); })();
+                        if (evt.Details[0] != L'\0') {
+                            detail += ", Detail: " + WideToUtf8(evt.Details);
+                        }
+                        matches.push_back({rule, std::move(detail)});
                     }
-                    OnRuleMatch(rule, evt.Header.ProcessId, detail);
+                } catch (...) {
+                    LOG_ERROR("DetectionEngine", "Exception in memoryEval rule " + std::to_string(rule.ruleId));
                 }
-            } catch (...) {
-                LOG_ERROR("DetectionEngine", "Exception in memoryEval rule " + std::to_string(rule.ruleId));
             }
         }
     }
 
-    ReleaseSRWLockShared(&m_Lock);
+    for (const auto& m : matches) {
+        OnRuleMatch(m.rule, evt.Header.ProcessId, m.detail);
+    }
 }
 
 } /* namespace blud */

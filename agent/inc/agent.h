@@ -1,4 +1,4 @@
-/*
+﻿/*
  * BludEDR - agent.h
  * Main agent header: forward declarations, common includes, utility macros
  *
@@ -45,7 +45,7 @@
  * Utility macros
  * ============================================================================ */
 #define BLUD_SAFE_DELETE(p)       do { if (p) { delete (p); (p) = nullptr; } } while(0)
-#define BLUD_SAFE_CLOSE_HANDLE(h) do { if ((h) && (h) != INVALID_HANDLE_VALUE) { CloseHandle(h); (h) = nullptr; } } while(0)
+#define BLUD_SAFE_CLOSE_HANDLE(h) do { if ((h) && (h) != INVALID_HANDLE_VALUE) { CloseHandle(h); (h) = INVALID_HANDLE_VALUE; } } while(0)
 #define BLUD_ARRAY_SIZE(a)       (sizeof(a) / sizeof((a)[0]))
 #define BLUD_SUCCEEDED(hr)       (((HRESULT)(hr)) >= 0)
 
@@ -107,6 +107,7 @@ inline bool ContainsInsensitive(const std::wstring& haystack, const std::wstring
 inline std::string WideToUtf8(const std::wstring& wide) {
     if (wide.empty()) return {};
     int sz = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), (int)wide.size(), nullptr, 0, nullptr, nullptr);
+    if (sz == 0) return {};
     std::string result(sz, '\0');
     WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), (int)wide.size(), &result[0], sz, nullptr, nullptr);
     return result;
@@ -115,10 +116,34 @@ inline std::string WideToUtf8(const std::wstring& wide) {
 inline std::wstring Utf8ToWide(const std::string& utf8) {
     if (utf8.empty()) return {};
     int sz = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), nullptr, 0);
+    if (sz == 0) return {};
     std::wstring result(sz, L'\0');
     MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &result[0], sz);
     return result;
 }
+
+/* ============================================================================
+ * RAII SRW lock wrappers
+ * ============================================================================ */
+class SrwExclusiveLock {
+public:
+    explicit SrwExclusiveLock(SRWLOCK& lock) : m_lock(lock) { AcquireSRWLockExclusive(&m_lock); }
+    ~SrwExclusiveLock() { ReleaseSRWLockExclusive(&m_lock); }
+    SrwExclusiveLock(const SrwExclusiveLock&) = delete;
+    SrwExclusiveLock& operator=(const SrwExclusiveLock&) = delete;
+private:
+    SRWLOCK& m_lock;
+};
+
+class SrwSharedLock {
+public:
+    explicit SrwSharedLock(SRWLOCK& lock) : m_lock(lock) { AcquireSRWLockShared(&m_lock); }
+    ~SrwSharedLock() { ReleaseSRWLockShared(&m_lock); }
+    SrwSharedLock(const SrwSharedLock&) = delete;
+    SrwSharedLock& operator=(const SrwSharedLock&) = delete;
+private:
+    SRWLOCK& m_lock;
+};
 
 /* ============================================================================
  * Global shutdown signal

@@ -73,13 +73,14 @@ bool MemoryScanner::ScanForShellcode(const BYTE* data, SIZE_T size) {
         for (SIZE_T i = 0; i < size - 6; i++) {
             if (data[i] == 0xFC && data[i + 1] == 0xE8) {
                 /* Found CLD+CALL, check for POP reg (0x58-0x5F) within range */
-                LONG offset = *(LONG*)&data[i + 2];
-                SIZE_T targetIdx = i + 6 + offset;
-                if (targetIdx < size) {
-                    BYTE popByte = data[targetIdx];
-                    if (popByte >= 0x58 && popByte <= 0x5F) {
-                        return true;
-                    }
+                LONG offset;
+                memcpy(&offset, &data[i + 2], sizeof(LONG));
+                LONGLONG targetAddr = (LONGLONG)(i + 6) + offset;
+                if (targetAddr < 0 || targetAddr >= (LONGLONG)size) continue;
+                SIZE_T targetIdx = (SIZE_T)targetAddr;
+                BYTE popByte = data[targetIdx];
+                if (popByte >= 0x58 && popByte <= 0x5F) {
+                    return true;
                 }
             }
         }

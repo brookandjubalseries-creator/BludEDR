@@ -18,6 +18,7 @@
  * ============================================================================ */
 
 pfnAddVectoredExceptionHandler g_pOrigAddVectoredExceptionHandler = nullptr;
+static PVOID s_hookedTarget = nullptr;
 
 /* Track process init phase: we consider the first 5 seconds after DLL load as "init" */
 static ULONGLONG g_initTimestamp = 0;
@@ -107,6 +108,8 @@ BOOL VehMonitor_Install()
 
     if (!pTarget) return FALSE;
 
+    s_hookedTarget = pTarget;
+
     return HookEngine_InstallHook(
         pTarget,
         reinterpret_cast<PVOID>(&Detour_AddVectoredExceptionHandler),
@@ -118,24 +121,9 @@ BOOL VehMonitor_Install()
  * ============================================================================ */
 void VehMonitor_Remove()
 {
-    HMODULE hKernelBase = GetModuleHandleW(L"kernelbase.dll");
-    PVOID pTarget = nullptr;
-
-    if (hKernelBase) {
-        pTarget = reinterpret_cast<PVOID>(
-            GetProcAddress(hKernelBase, "AddVectoredExceptionHandler"));
-    }
-
-    if (!pTarget) {
-        HMODULE hKernel32 = GetModuleHandleW(L"kernel32.dll");
-        if (hKernel32) {
-            pTarget = reinterpret_cast<PVOID>(
-                GetProcAddress(hKernel32, "AddVectoredExceptionHandler"));
-        }
-    }
-
-    if (pTarget) {
-        HookEngine_RemoveHook(pTarget);
+    if (s_hookedTarget) {
+        HookEngine_RemoveHook(s_hookedTarget);
+        s_hookedTarget = nullptr;
     }
 
     g_pOrigAddVectoredExceptionHandler = nullptr;

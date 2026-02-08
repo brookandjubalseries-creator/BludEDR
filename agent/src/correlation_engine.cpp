@@ -306,6 +306,7 @@ void CorrelationEngine::EmitMatch(const CorrelationMatch& match) {
 }
 
 void CorrelationEngine::SetCallback(CorrelationCallback cb) {
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_callback = std::move(cb);
 }
 

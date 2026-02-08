@@ -60,7 +60,7 @@ private:
     /* For events/sec calculation */
     uint64_t            m_LastEventCount;
     uint64_t            m_LastCountTick;
-    double              m_EventsPerSec;
+    std::atomic<double> m_EventsPerSec;
 
     /* Console dimensions */
     static constexpr SHORT CONSOLE_WIDTH = 120;

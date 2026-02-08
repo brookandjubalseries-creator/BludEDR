@@ -53,6 +53,24 @@ using NetworkCallback = std::function<void(const NetworkConnection&)>;
 using BeaconCallback = std::function<void(const BeaconingInfo&)>;
 using DnsCallback = std::function<void(const DnsInfo&)>;
 
+struct ConnectionKey {
+    DWORD pid;
+    DWORD remoteAddr;
+    USHORT remotePort;
+    bool operator==(const ConnectionKey& o) const {
+        return pid == o.pid && remoteAddr == o.remoteAddr && remotePort == o.remotePort;
+    }
+};
+
+struct ConnectionKeyHash {
+    size_t operator()(const ConnectionKey& k) const {
+        size_t h = std::hash<DWORD>{}(k.pid);
+        h ^= std::hash<DWORD>{}(k.remoteAddr) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<USHORT>{}(k.remotePort) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
 class WfpMonitor {
 public:
     WfpMonitor();
@@ -104,7 +122,7 @@ private:
     };
 
     std::unordered_map<DWORD, ProcessConnHistory>       m_processConns;
-    std::unordered_map<ULONGLONG, BeaconTracker>        m_beaconTrackers;
+    std::unordered_map<ConnectionKey, BeaconTracker, ConnectionKeyHash> m_beaconTrackers;
 
     NetworkCallback     m_connCallback;
     BeaconCallback      m_beaconCallback;

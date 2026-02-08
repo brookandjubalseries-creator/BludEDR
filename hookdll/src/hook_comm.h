@@ -8,5 +8,5 @@
 #include "../inc/hookdll.h"
 
 #define HOOK_COMM_RING_BUFFER_SIZE  256
-#define HOOK_COMM_MAX_RETRIES       5
+#define HOOK_COMM_MAX_RETRIES       2
 #define HOOK_COMM_BASE_BACKOFF_MS   100

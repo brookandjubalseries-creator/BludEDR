@@ -7,9 +7,6 @@
 
 #include "../inc/driver.h"
 
-#ifdef ALLOC_PRAGMA
-#pragma alloc_text(PAGE, BludProcessNotifyRoutineEx)
-#endif
 
 /* ============================================================================
  * Local helpers
@@ -62,7 +59,16 @@ BludpCheckLsass(
                         ImageFileName->Length - lsassName.Length);
 
         if (RtlEqualUnicodeString(&suffix, &lsassName, TRUE)) {
-            g_Globals.LsassPid = (ULONG)(ULONG_PTR)ProcessId;
+            /*
+             * Verify the character before "lsass.exe" is a backslash
+             * or the match is at the start of the string. This prevents
+             * "fakelsass.exe" from matching.
+             */
+            if (suffix.Buffer == ImageFileName->Buffer ||
+                *(suffix.Buffer - 1) == L'\\') {
+                InterlockedExchange((volatile LONG*)&g_Globals.LsassPid,
+                    (LONG)(ULONG)(ULONG_PTR)ProcessId);
+            }
         }
     }
 }
@@ -77,27 +83,39 @@ BludProcessNotifyRoutineEx(
     _Inout_opt_ PPS_CREATE_NOTIFY_INFO  CreateInfo
     )
 {
-    SENTINEL_PROCESS_EVENT procEvent;
+    PSENTINEL_PROCESS_EVENT pProcEvent;
 
-    PAGED_CODE();
     UNREFERENCED_PARAMETER(Process);
 
-    RtlZeroMemory(&procEvent, sizeof(procEvent));
+    /*
+     * Allocate from pool to avoid ~9KB stack usage which would overflow
+     * the kernel stack.
+     */
+    pProcEvent = (PSENTINEL_PROCESS_EVENT)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        sizeof(SENTINEL_PROCESS_EVENT),
+        'PEvt'
+        );
+    if (pProcEvent == NULL) {
+        return;
+    }
+
+    RtlZeroMemory(pProcEvent, sizeof(SENTINEL_PROCESS_EVENT));
 
     if (CreateInfo != NULL) {
         /* ---- Process Creation ---- */
-        BludFillEventHeader(&procEvent.Header, EVENT_PROCESS_CREATE, sizeof(procEvent));
+        BludFillEventHeader(&pProcEvent->Header, EVENT_PROCESS_CREATE, sizeof(SENTINEL_PROCESS_EVENT));
 
-        procEvent.ParentProcessId  = (ULONG)(ULONG_PTR)CreateInfo->ParentProcessId;
-        procEvent.CreatorProcessId = (ULONG)(ULONG_PTR)CreateInfo->CreatingThreadId.UniqueProcess;
-        procEvent.CreatorThreadId  = (ULONG)(ULONG_PTR)CreateInfo->CreatingThreadId.UniqueThread;
-        procEvent.IsTermination    = FALSE;
-        procEvent.ExitCode         = 0;
+        pProcEvent->ParentProcessId  = (ULONG)(ULONG_PTR)CreateInfo->ParentProcessId;
+        pProcEvent->CreatorProcessId = (ULONG)(ULONG_PTR)CreateInfo->CreatingThreadId.UniqueProcess;
+        pProcEvent->CreatorThreadId  = (ULONG)(ULONG_PTR)CreateInfo->CreatingThreadId.UniqueThread;
+        pProcEvent->IsTermination    = FALSE;
+        pProcEvent->ExitCode         = 0;
 
         /* Capture image path */
         if (CreateInfo->ImageFileName != NULL) {
             BludpCopyUnicodeStringToBuffer(
-                procEvent.ImagePath,
+                pProcEvent->ImagePath,
                 SENTINEL_MAX_PATH,
                 CreateInfo->ImageFileName
                 );
@@ -109,14 +127,14 @@ BludProcessNotifyRoutineEx(
         /* Capture command line */
         if (CreateInfo->CommandLine != NULL) {
             BludpCopyUnicodeStringToBuffer(
-                procEvent.CommandLine,
+                pProcEvent->CommandLine,
                 SENTINEL_MAX_COMMAND_LINE,
                 CreateInfo->CommandLine
                 );
         }
 
         /* Override the header PID with the actual new process PID */
-        procEvent.Header.ProcessId = (ULONG)(ULONG_PTR)ProcessId;
+        pProcEvent->Header.ProcessId = (ULONG)(ULONG_PTR)ProcessId;
 
         /* Create a process context entry for tracking */
         {
@@ -132,10 +150,10 @@ BludProcessNotifyRoutineEx(
 
     } else {
         /* ---- Process Termination ---- */
-        BludFillEventHeader(&procEvent.Header, EVENT_PROCESS_TERMINATE, sizeof(procEvent));
+        BludFillEventHeader(&pProcEvent->Header, EVENT_PROCESS_TERMINATE, sizeof(SENTINEL_PROCESS_EVENT));
 
-        procEvent.Header.ProcessId = (ULONG)(ULONG_PTR)ProcessId;
-        procEvent.IsTermination    = TRUE;
+        pProcEvent->Header.ProcessId = (ULONG)(ULONG_PTR)ProcessId;
+        pProcEvent->IsTermination    = TRUE;
 
         /* Retrieve exit code */
         {
@@ -150,14 +168,18 @@ BludProcessNotifyRoutineEx(
                  * We cast NTSTATUS to ULONG for the event.
                  */
                 exitStatus = PsGetProcessExitStatus(targetProcess);
-                procEvent.ExitCode = (ULONG)exitStatus;
+                pProcEvent->ExitCode = (ULONG)exitStatus;
                 ObDereferenceObject(targetProcess);
             }
         }
 
         /* Clear LSASS PID if it is terminating */
-        if ((ULONG)(ULONG_PTR)ProcessId == g_Globals.LsassPid) {
-            g_Globals.LsassPid = 0;
+        {
+            ULONG currentLsassPid = (ULONG)ReadNoFence((volatile LONG*)&g_Globals.LsassPid);
+            if ((ULONG)(ULONG_PTR)ProcessId == currentLsassPid) {
+                InterlockedCompareExchange((volatile LONG*)&g_Globals.LsassPid,
+                    0, (LONG)currentLsassPid);
+            }
         }
 
         /* Remove process context */
@@ -165,5 +187,7 @@ BludProcessNotifyRoutineEx(
     }
 
     /* Enqueue the event */
-    BludEnqueueEvent(&g_Globals.EventQueue, &procEvent, sizeof(procEvent));
+    BludEnqueueEvent(&g_Globals.EventQueue, pProcEvent, sizeof(SENTINEL_PROCESS_EVENT));
+
+    ExFreePoolWithTag(pProcEvent, 'PEvt');
 }

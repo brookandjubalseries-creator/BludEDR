@@ -37,6 +37,7 @@ private:
     void ReceiverLoop();
 
     HANDLE              m_Port;
+    mutable SRWLOCK      m_PortLock;
     std::atomic<bool>   m_Connected;
     std::atomic<bool>   m_Running;
     HANDLE              m_ReceiverThreads[BLUD_RECEIVER_THREADS];

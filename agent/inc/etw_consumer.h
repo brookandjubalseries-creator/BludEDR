@@ -16,6 +16,7 @@
 #include <atomic>
 #include <thread>
 #include <deque>
+#include <optional>
 
 namespace blud {
 
@@ -55,7 +56,7 @@ public:
     void SetCallback(EtwCallback cb);
 
     /* Get per-process event buffer */
-    const ProcessEtwBuffer* GetProcessBuffer(DWORD pid);
+    std::optional<ProcessEtwBuffer> GetProcessBuffer(DWORD pid);
 
     /* Stats */
     ULONGLONG GetTotalEventsProcessed() const { return m_totalEvents; }
@@ -93,7 +94,7 @@ private:
     std::atomic<ULONGLONG> m_totalEvents{0};
 
     /* Static instance for callback routing */
-    static EtwConsumer* s_instance;
+    static std::atomic<EtwConsumer*> s_instance;
 };
 
 } // namespace blud

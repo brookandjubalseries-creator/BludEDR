@@ -189,7 +189,7 @@ typedef struct _BLUD_GLOBALS {
     volatile LONG           SequenceNumber;
 
     /* LSASS PID cached for object callback fast path */
-    ULONG                   LsassPid;
+    volatile ULONG          LsassPid;
 
     /* Flags */
     BOOLEAN                 ProcessCallbackRegistered;
@@ -382,14 +382,21 @@ BludProcessContextCreate(
     _Out_ PBLUD_PROCESS_CONTEXT *Context
     );
 
-PBLUD_PROCESS_CONTEXT
+BOOLEAN
 BludProcessContextLookup(
-    _In_ ULONG ProcessId
+    _In_  HANDLE              ProcessId,
+    _Out_ PBLUD_PROCESS_CONTEXT OutContext
     );
 
 VOID
 BludProcessContextRemove(
     _In_ ULONG ProcessId
+    );
+
+BOOLEAN
+BludProcessContextSetFlags(
+    _In_ HANDLE ProcessId,
+    _In_ LONG   FlagsToSet
     );
 
 VOID

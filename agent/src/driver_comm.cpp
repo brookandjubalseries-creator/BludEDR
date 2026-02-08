@@ -20,6 +20,7 @@ DriverComm::DriverComm()
     , m_MessagesReceived(0)
     , m_CommandsSent(0)
 {
+    InitializeSRWLock(&m_PortLock);
     ZeroMemory(m_ReceiverThreads, sizeof(m_ReceiverThreads));
     s_Instance = this;
 }
@@ -83,9 +84,13 @@ void DriverComm::Disconnect()
         }
     }
 
-    if (m_Port != INVALID_HANDLE_VALUE) {
-        CloseHandle(m_Port);
-        m_Port = INVALID_HANDLE_VALUE;
+    {
+        AcquireSRWLockExclusive(&m_PortLock);
+        if (m_Port != INVALID_HANDLE_VALUE) {
+            CloseHandle(m_Port);
+            m_Port = INVALID_HANDLE_VALUE;
+        }
+        ReleaseSRWLockExclusive(&m_PortLock);
     }
 
     LOG_INFO("DriverComm", "Disconnected from driver");
@@ -167,13 +172,22 @@ bool DriverComm::SendCommand(const SENTINEL_COMMAND& cmd, SENTINEL_REPLY* reply)
     SENTINEL_REPLY_MESSAGE replyMsg = {};
     DWORD replySize = sizeof(SENTINEL_REPLY_MESSAGE);
 
+    AcquireSRWLockShared(&m_PortLock);
+    HANDLE port = m_Port;
+    if (port == INVALID_HANDLE_VALUE) {
+        ReleaseSRWLockShared(&m_PortLock);
+        LOG_WARNING("DriverComm", "SendCommand: port handle is invalid");
+        return false;
+    }
+
     HRESULT hr = FilterSendMessage(
-        m_Port,
+        port,
         const_cast<SENTINEL_COMMAND*>(&cmd),
         sizeof(SENTINEL_COMMAND),
         &replyMsg,
         replySize,
         &replySize);
+    ReleaseSRWLockShared(&m_PortLock);
 
     if (!BLUD_SUCCEEDED(hr)) {
         LOG_ERROR("DriverComm",

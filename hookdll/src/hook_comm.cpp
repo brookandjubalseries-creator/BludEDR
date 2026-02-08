@@ -15,7 +15,8 @@
 
 static HANDLE               g_hPipe = INVALID_HANDLE_VALUE;
 static CRITICAL_SECTION     g_commLock;
-static BOOL                 g_commInit = FALSE;
+static volatile LONG        g_commInit = FALSE;
+static INIT_ONCE            g_commInitOnce = INIT_ONCE_STATIC_INIT;
 static DWORD                g_targetPid = 0;
 static WCHAR                g_pipeName[128] = {};
 
@@ -138,23 +139,26 @@ static void BufferEvent(const SENTINEL_MEMORY_EVENT* pEvent)
 /* ============================================================================
  * HookComm_Initialize
  * ============================================================================ */
-BOOL HookComm_Initialize(DWORD pid)
+static BOOL CALLBACK CommInitCallback(PINIT_ONCE, PVOID pParam, PVOID*)
 {
-    if (g_commInit) return TRUE;
-
+    DWORD pid = (DWORD)(ULONG_PTR)pParam;
     InitializeCriticalSection(&g_commLock);
-
     g_targetPid = pid;
     _snwprintf_s(g_pipeName, _countof(g_pipeName), _TRUNCATE,
                  L"%s%lu", BLUD_HOOK_PIPE_PREFIX, pid);
-
-    /* Zero ring buffer */
     ZeroMemory(g_ringBuffer, sizeof(g_ringBuffer));
     g_ringWriteIndex = 0;
     g_ringReadIndex = 0;
     g_ringCount = 0;
+    InterlockedExchange(&g_commInit, TRUE);
+    return TRUE;
+}
 
-    g_commInit = TRUE;
+BOOL HookComm_Initialize(DWORD pid)
+{
+    if (InterlockedCompareExchange(&g_commInit, FALSE, FALSE)) return TRUE;
+
+    InitOnceExecuteOnce(&g_commInitOnce, CommInitCallback, (PVOID)(ULONG_PTR)pid, nullptr);
 
     /* Try initial connection (non-fatal if fails) */
     EnterCriticalSection(&g_commLock);
@@ -169,7 +173,7 @@ BOOL HookComm_Initialize(DWORD pid)
  * ============================================================================ */
 void HookComm_Shutdown()
 {
-    if (!g_commInit) return;
+    if (!InterlockedExchange(&g_commInit, FALSE)) return; /* was already FALSE */
 
     EnterCriticalSection(&g_commLock);
     Disconnect();
@@ -177,8 +181,9 @@ void HookComm_Shutdown()
     g_ringCount = 0;
     LeaveCriticalSection(&g_commLock);
 
+    /* Small sleep to let any in-flight SendEvent calls complete */
+    Sleep(10);
     DeleteCriticalSection(&g_commLock);
-    g_commInit = FALSE;
 }
 
 /* ============================================================================
@@ -187,7 +192,7 @@ void HookComm_Shutdown()
  * ============================================================================ */
 BOOL HookComm_SendEvent(const SENTINEL_MEMORY_EVENT* pEvent)
 {
-    if (!g_commInit || !pEvent) return FALSE;
+    if (!InterlockedCompareExchange(&g_commInit, TRUE, TRUE) || !pEvent) return FALSE;
 
     EnterCriticalSection(&g_commLock);
 
@@ -200,7 +205,7 @@ BOOL HookComm_SendEvent(const SENTINEL_MEMORY_EVENT* pEvent)
             LeaveCriticalSection(&g_commLock);
             Sleep(backoffMs);
             EnterCriticalSection(&g_commLock);
-            backoffMs = min(backoffMs * 2, 1000);
+            backoffMs = min(backoffMs * 2, (DWORD)100);
         }
     }
 

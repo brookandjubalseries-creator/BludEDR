@@ -11,6 +11,7 @@
 #include <vector>
 #include <unordered_map>
 #include <mutex>
+#include <optional>
 
 #pragma comment(lib, "dbghelp.lib")
 
@@ -60,7 +61,7 @@ public:
     bool IsAddressInModule(DWORD pid, PVOID address);
 
     /* Get module containing an address */
-    const ModuleInfo* GetModuleForAddress(DWORD pid, PVOID address);
+    std::optional<ModuleInfo> GetModuleForAddress(DWORD pid, PVOID address);
 
 private:
     /* Per-process module cache */

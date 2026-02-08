@@ -61,7 +61,7 @@ private:
     YR_RULES*           m_rules = nullptr;
     YR_COMPILER*        m_compiler = nullptr;
     YaraMatchCallback   m_callback;
-    std::mutex          m_scanMutex;
+    std::recursive_mutex m_scanMutex;
     std::atomic<bool>   m_initialized{false};
     size_t              m_ruleCount = 0;
 };

@@ -82,10 +82,10 @@ void CallstackAnalyzer::RefreshModuleCache(DWORD pid) {
 }
 
 bool CallstackAnalyzer::IsAddressInModule(DWORD pid, PVOID address) {
-    return GetModuleForAddress(pid, address) != nullptr;
+    return GetModuleForAddress(pid, address).has_value();
 }
 
-const ModuleInfo* CallstackAnalyzer::GetModuleForAddress(DWORD pid, PVOID address) {
+std::optional<ModuleInfo> CallstackAnalyzer::GetModuleForAddress(DWORD pid, PVOID address) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
     auto& cache = m_moduleCache[pid];
@@ -101,11 +101,11 @@ const ModuleInfo* CallstackAnalyzer::GetModuleForAddress(DWORD pid, PVOID addres
         uintptr_t modStart = (uintptr_t)mod.BaseAddress;
         uintptr_t modEnd = modStart + mod.Size;
         if (addr >= modStart && addr < modEnd) {
-            return &mod;
+            return mod;
         }
     }
 
-    return nullptr;
+    return std::nullopt;
 }
 
 CallstackAnalysis CallstackAnalyzer::AnalyzeCallstack(DWORD pid, PVOID* frames, ULONG frameCount) {
@@ -124,8 +124,8 @@ CallstackAnalysis CallstackAnalyzer::AnalyzeCallstack(DWORD pid, PVOID* frames, 
         frame.Displacement = 0;
         frame.IsUnbacked = false;
 
-        const ModuleInfo* mod = GetModuleForAddress(pid, frames[i]);
-        if (mod) {
+        auto mod = GetModuleForAddress(pid, frames[i]);
+        if (mod.has_value()) {
             frame.ModuleName = mod->Name;
         } else {
             frame.IsUnbacked = true;
@@ -174,7 +174,7 @@ CallstackAnalysis CallstackAnalyzer::WalkThread(DWORD pid, DWORD tid) {
     result.HasUnbackedFrames = false;
     result.IsSuspicious = false;
 
-    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (!hProcess) return result;
 
     HANDLE hThread = OpenThread(THREAD_GET_CONTEXT | THREAD_SUSPEND_RESUME |
@@ -204,8 +204,13 @@ CallstackAnalysis CallstackAnalyzer::WalkThread(DWORD pid, DWORD tid) {
         sf.AddrStack.Offset = ctx.Rsp;
         sf.AddrStack.Mode = AddrModeFlat;
 
-        /* Initialize symbols for target process */
-        SymInitialize(hProcess, nullptr, TRUE);
+        /* Refresh module list under lock (SymInitialize already done in Initialize()) */
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_symbolsInitialized) {
+                SymRefreshModuleList(hProcess);
+            }
+        }
 
         PVOID frames[SENTINEL_MAX_CALLSTACK];
         ULONG frameCount = 0;
@@ -223,8 +228,6 @@ CallstackAnalysis CallstackAnalyzer::WalkThread(DWORD pid, DWORD tid) {
             frames[i] = (PVOID)sf.AddrPC.Offset;
             frameCount++;
         }
-
-        SymCleanup(hProcess);
 
         /* Analyze the captured frames */
         result = AnalyzeCallstack(pid, frames, frameCount);

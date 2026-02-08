@@ -37,9 +37,10 @@ void IoCScoring::Initialize()
 
 void IoCScoring::Shutdown()
 {
-    AcquireSRWLockExclusive(&m_Lock);
-    m_Scores.clear();
-    ReleaseSRWLockExclusive(&m_Lock);
+    {
+        SrwExclusiveLock lock(m_Lock);
+        m_Scores.clear();
+    }
     LOG_INFO("IoCScoring", "Shut down");
 }
 
@@ -80,33 +81,48 @@ void IoCScoring::AddScore(DWORD pid, ULONG ruleId, double score, IOC_CATEGORY ca
     entry.category = category;
     entry.timestamp = NowSeconds();
 
-    AcquireSRWLockExclusive(&m_Lock);
-    m_Scores[pid].push_back(entry);
-    ReleaseSRWLockExclusive(&m_Lock);
-
-    /* Update the process tree node score */
-    double currentScore = GetCurrentScore(pid);
-    ProcessTree::Instance().UpdateScore(pid, currentScore);
-
-    /* Lineage inheritance: propagate fraction of score to parent */
+    /* Lookup parent PID before locking to avoid nested lock with ProcessTree */
     ProcessNode node;
-    if (ProcessTree::Instance().GetProcess(pid, node) && node.ppid != 0) {
-        double inheritedScore = score * PARENT_CONTRIBUTION;
-        if (inheritedScore >= 1.0) {
+    bool hasParent = ProcessTree::Instance().GetProcess(pid, node) && node.ppid != 0;
+    double inheritedScore = score * PARENT_CONTRIBUTION;
+
+    double currentScore = 0.0;
+    double parentScore = 0.0;
+
+    {
+        SrwExclusiveLock lock(m_Lock);
+
+        m_Scores[pid].push_back(entry);
+
+        /* Compute current score inline (avoids re-acquiring lock) */
+        double now = NowSeconds();
+        for (const auto& e : m_Scores[pid]) {
+            currentScore += ApplyDecay(e.baseScore, e.timestamp, now);
+        }
+        if (currentScore > 100.0) currentScore = 100.0;
+
+        /* Lineage inheritance: propagate fraction of score to parent */
+        if (hasParent && inheritedScore >= 1.0) {
             ScoreEntry parentEntry;
             parentEntry.ruleId = ruleId;
             parentEntry.baseScore = inheritedScore;
             parentEntry.severity = IOC_SEVERITY_INFO;
             parentEntry.category = category;
-            parentEntry.timestamp = NowSeconds();
+            parentEntry.timestamp = now;
 
-            AcquireSRWLockExclusive(&m_Lock);
             m_Scores[node.ppid].push_back(parentEntry);
-            ReleaseSRWLockExclusive(&m_Lock);
 
-            double parentScore = GetCurrentScore(node.ppid);
-            ProcessTree::Instance().UpdateScore(node.ppid, parentScore);
+            for (const auto& e : m_Scores[node.ppid]) {
+                parentScore += ApplyDecay(e.baseScore, e.timestamp, now);
+            }
+            if (parentScore > 100.0) parentScore = 100.0;
         }
+    }
+
+    /* Update process tree scores outside our lock */
+    ProcessTree::Instance().UpdateScore(pid, currentScore);
+    if (hasParent && inheritedScore >= 1.0) {
+        ProcessTree::Instance().UpdateScore(node.ppid, parentScore);
     }
 }
 
@@ -118,16 +134,15 @@ double IoCScoring::GetCurrentScore(DWORD pid) const
     double now = NowSeconds();
     double total = 0.0;
 
-    AcquireSRWLockShared(&m_Lock);
-
-    auto it = m_Scores.find(pid);
-    if (it != m_Scores.end()) {
-        for (const auto& entry : it->second) {
-            total += ApplyDecay(entry.baseScore, entry.timestamp, now);
+    {
+        SrwSharedLock lock(m_Lock);
+        auto it = m_Scores.find(pid);
+        if (it != m_Scores.end()) {
+            for (const auto& entry : it->second) {
+                total += ApplyDecay(entry.baseScore, entry.timestamp, now);
+            }
         }
     }
-
-    ReleaseSRWLockShared(&m_Lock);
 
     /* Clamp to 0-100 range */
     if (total > 100.0) total = 100.0;
@@ -158,9 +173,8 @@ ALERT_ACTION IoCScoring::GetActionForScore(double score)
  * ============================================================================ */
 void IoCScoring::ClearProcess(DWORD pid)
 {
-    AcquireSRWLockExclusive(&m_Lock);
+    SrwExclusiveLock lock(m_Lock);
     m_Scores.erase(pid);
-    ReleaseSRWLockExclusive(&m_Lock);
 }
 
 } /* namespace blud */

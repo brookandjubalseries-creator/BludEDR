@@ -199,12 +199,26 @@ typedef struct _SENTINEL_REPLY_MESSAGE {
 } SENTINEL_REPLY_MESSAGE, *PSENTINEL_REPLY_MESSAGE;
 
 /* ============================================================================
+ * Union of all event types to determine max event size
+ * ============================================================================ */
+typedef union _SENTINEL_MAX_EVENT {
+    SENTINEL_PROCESS_EVENT  Process;
+    SENTINEL_THREAD_EVENT   Thread;
+    SENTINEL_IMAGE_EVENT    Image;
+    SENTINEL_REGISTRY_EVENT Registry;
+    SENTINEL_MEMORY_EVENT   Memory;
+    SENTINEL_OBJECT_EVENT   Object;
+    SENTINEL_NETWORK_EVENT  Network;
+    SENTINEL_FILE_EVENT     File;
+} SENTINEL_MAX_EVENT;
+
+/* ============================================================================
  * Lock-free ring buffer entry for event queue
  * ============================================================================ */
 typedef struct _SENTINEL_QUEUE_ENTRY {
     volatile LONG           InUse;          /* 0=free, 1=writing, 2=ready */
     ULONG                   DataSize;
-    UCHAR                   Data[sizeof(SENTINEL_REGISTRY_EVENT)]; /* Largest event */
+    UCHAR                   Data[sizeof(SENTINEL_MAX_EVENT)]; /* Largest event */
 } SENTINEL_QUEUE_ENTRY, *PSENTINEL_QUEUE_ENTRY;
 
 #ifdef __cplusplus

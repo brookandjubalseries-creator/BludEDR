@@ -124,8 +124,10 @@ void ConsoleDashboard::RefreshLoop()
         uint64_t currentEvents = EventDispatcher::Instance().GetCounters().totalEvents.load(std::memory_order_relaxed);
         uint64_t elapsed = now - m_LastCountTick;
         if (elapsed >= 1000) {
-            m_EventsPerSec = static_cast<double>(currentEvents - m_LastEventCount) /
-                             (static_cast<double>(elapsed) / 1000.0);
+            m_EventsPerSec.store(
+                static_cast<double>(currentEvents - m_LastEventCount) /
+                (static_cast<double>(elapsed) / 1000.0),
+                std::memory_order_relaxed);
             m_LastEventCount = currentEvents;
             m_LastCountTick = now;
         }
@@ -285,7 +287,7 @@ void ConsoleDashboard::DrawSystemStats()
 
     std::ostringstream line;
     line << " Stats: "
-         << "Events/sec=" << std::fixed << std::setprecision(1) << m_EventsPerSec << "  "
+         << "Events/sec=" << std::fixed << std::setprecision(1) << m_EventsPerSec.load(std::memory_order_relaxed) << "  "
          << "Active Procs=" << ProcessTree::Instance().GetProcessCount() << "  "
          << "Total Events=" << FormatNumber(c.totalEvents.load()) << "  "
          << "Alerts=" << FormatNumber(totalAlerts);
@@ -387,7 +389,7 @@ std::string ConsoleDashboard::FormatNumber(uint64_t n) const
 std::string ConsoleDashboard::FormatEventsPerSec() const
 {
     std::ostringstream oss;
-    oss << std::fixed << std::setprecision(1) << m_EventsPerSec;
+    oss << std::fixed << std::setprecision(1) << m_EventsPerSec.load(std::memory_order_relaxed);
     return oss.str();
 }
 

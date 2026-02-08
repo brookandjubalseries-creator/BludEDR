@@ -24,6 +24,7 @@ ServiceController* ServiceController::s_Instance = nullptr;
 ServiceController::ServiceController()
     : m_StatusHandle(nullptr)
     , m_ShutdownEvent(nullptr)
+    , m_CheckPoint(1)
 {
     ZeroMemory(&m_ServiceStatus, sizeof(m_ServiceStatus));
     m_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
@@ -173,15 +174,13 @@ DWORD WINAPI ServiceController::ServiceCtrlHandlerEx(
  * ============================================================================ */
 void ServiceController::SetServiceState(DWORD state, DWORD exitCode, DWORD waitHint)
 {
-    static DWORD checkPoint = 1;
-
     m_ServiceStatus.dwCurrentState = state;
     m_ServiceStatus.dwWin32ExitCode = exitCode;
     m_ServiceStatus.dwWaitHint = waitHint;
 
     if (state == SERVICE_START_PENDING || state == SERVICE_STOP_PENDING) {
         m_ServiceStatus.dwControlsAccepted = 0;
-        m_ServiceStatus.dwCheckPoint = checkPoint++;
+        m_ServiceStatus.dwCheckPoint = m_CheckPoint++;
     } else {
         m_ServiceStatus.dwControlsAccepted =
             SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PAUSE_CONTINUE | SERVICE_ACCEPT_SHUTDOWN;
@@ -265,16 +264,18 @@ void ServiceController::ShutdownComponents()
 
     g_ShutdownRequested.store(true, std::memory_order_release);
 
+    /* Stop dashboard first - it reads from EventDispatcher/ProcessTree */
+    ConsoleDashboard::Instance().Stop();
+
     DriverComm::Instance().Disconnect();
     EventDispatcher::Instance().Shutdown();
-    ConsoleDashboard::Instance().Stop();
     AlertManager::Instance().Shutdown();
     DetectionEngine::Instance().Shutdown();
     IoCScoring::Instance().Shutdown();
     ProcessTree::Instance().Shutdown();
-    Logger::Instance().Shutdown();
 
     LOG_INFO("Service", "All components shut down");
+    Logger::Instance().Shutdown();
 }
 
 void ServiceController::RequestShutdown()

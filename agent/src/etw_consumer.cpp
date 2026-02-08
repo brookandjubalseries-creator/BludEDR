@@ -31,7 +31,7 @@ static const GUID GUID_ThreatIntel = {
     { 0xF1, 0xD8, 0x04, 0x0F, 0x4D, 0x8D, 0xD3, 0x44 }
 };
 
-EtwConsumer* EtwConsumer::s_instance = nullptr;
+std::atomic<EtwConsumer*> EtwConsumer::s_instance{nullptr};
 
 EtwConsumer::EtwConsumer() {
     m_sessionName = L"BludEDR_ETW_Session";
@@ -42,7 +42,7 @@ EtwConsumer::~EtwConsumer() {
 }
 
 bool EtwConsumer::Initialize() {
-    s_instance = this;
+    s_instance.store(this);
     m_running = true;
 
     if (!StartSession()) {
@@ -71,7 +71,7 @@ void EtwConsumer::Shutdown() {
         m_consumerThread.join();
     }
 
-    s_instance = nullptr;
+    s_instance.store(nullptr);
 }
 
 bool EtwConsumer::StartSession() {
@@ -110,6 +110,20 @@ bool EtwConsumer::StartSession() {
     status = StartTraceW(&m_sessionHandle, m_sessionName.c_str(), props);
     if (status != ERROR_SUCCESS && status != ERROR_ALREADY_EXISTS) {
         return false;
+    }
+
+    /* If the session already existed, m_sessionHandle may not be set.
+       Query for the handle using ControlTraceW. */
+    if (status == ERROR_ALREADY_EXISTS && m_sessionHandle == 0) {
+        memset(buffer.data(), 0, bufferSize);
+        props->Wnode.BufferSize = (ULONG)bufferSize;
+        props->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
+        ULONG queryStatus = ControlTraceW(0, m_sessionName.c_str(), props, EVENT_TRACE_CONTROL_QUERY);
+        if (queryStatus == ERROR_SUCCESS) {
+            m_sessionHandle = (TRACEHANDLE)props->Wnode.HistoricalContext;
+        } else {
+            return false;
+        }
     }
 
     return true;
@@ -166,8 +180,9 @@ void EtwConsumer::ConsumerThreadProc() {
 }
 
 void WINAPI EtwConsumer::EventRecordCallback(PEVENT_RECORD pEventRecord) {
-    if (s_instance && s_instance->m_running) {
-        s_instance->HandleEvent(pEventRecord);
+    auto* inst = s_instance.load(std::memory_order_acquire);
+    if (inst && inst->m_running) {
+        inst->HandleEvent(pEventRecord);
     }
 }
 
@@ -198,22 +213,28 @@ void EtwConsumer::HandleEvent(PEVENT_RECORD pEventRecord) {
     }
 
     /* Notify callback */
-    if (m_callback) {
-        m_callback(evt);
+    EtwCallback cbCopy;
+    {
+        std::lock_guard<std::mutex> lock(m_bufferMutex);
+        cbCopy = m_callback;
+    }
+    if (cbCopy) {
+        cbCopy(evt);
     }
 }
 
 void EtwConsumer::SetCallback(EtwCallback cb) {
+    std::lock_guard<std::mutex> lock(m_bufferMutex);
     m_callback = std::move(cb);
 }
 
-const ProcessEtwBuffer* EtwConsumer::GetProcessBuffer(DWORD pid) {
+std::optional<ProcessEtwBuffer> EtwConsumer::GetProcessBuffer(DWORD pid) {
     std::lock_guard<std::mutex> lock(m_bufferMutex);
     auto it = m_processBuffers.find(pid);
     if (it != m_processBuffers.end()) {
-        return &it->second;
+        return it->second;
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 } // namespace blud

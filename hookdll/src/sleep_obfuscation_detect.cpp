@@ -24,9 +24,10 @@
 static RegionTracker    g_trackers[SLEEP_DETECT_MAX_REGIONS] = {};
 static ULONG            g_trackerCount = 0;
 static CRITICAL_SECTION g_sleepLock;
-static BOOL             g_sleepInit = FALSE;
+static volatile LONG    g_sleepInit = FALSE;
 static HANDLE           g_hCheckThread = nullptr;
 static std::atomic<bool> g_sleepRunning{false};
+static HANDLE           g_sleepShutdownEvent = NULL;
 
 /* ============================================================================
  * Internal: Find or create a tracker for a base address
@@ -36,6 +37,7 @@ static RegionTracker* FindOrCreateTracker(PVOID baseAddress)
     /* Search existing */
     for (ULONG i = 0; i < g_trackerCount; i++) {
         if (g_trackers[i].baseAddress == baseAddress) {
+            g_trackers[i].lastTick = GetTickCount64();
             return &g_trackers[i];
         }
     }
@@ -45,13 +47,23 @@ static RegionTracker* FindOrCreateTracker(PVOID baseAddress)
         RegionTracker* t = &g_trackers[g_trackerCount++];
         ZeroMemory(t, sizeof(*t));
         t->baseAddress = baseAddress;
+        t->lastTick = GetTickCount64();
         return t;
     }
 
-    /* No space - recycle oldest (LRU eviction: use slot 0) */
-    RegionTracker* t = &g_trackers[0];
+    /* No space - LRU eviction: find tracker with oldest lastTick */
+    DWORD oldestIdx = 0;
+    ULONGLONG oldestTick = g_trackers[0].lastTick;
+    for (DWORD j = 1; j < g_trackerCount; j++) {
+        if (g_trackers[j].lastTick < oldestTick) {
+            oldestTick = g_trackers[j].lastTick;
+            oldestIdx = j;
+        }
+    }
+    RegionTracker* t = &g_trackers[oldestIdx];
     ZeroMemory(t, sizeof(*t));
     t->baseAddress = baseAddress;
+    t->lastTick = GetTickCount64();
     return t;
 }
 
@@ -100,7 +112,7 @@ static BOOL CheckSleepPattern(const RegionTracker* t)
  * ============================================================================ */
 void SleepDetect_RecordProtectEvent(PVOID baseAddress, ULONG newProtect)
 {
-    if (!g_sleepInit) return;
+    if (!InterlockedCompareExchange(&g_sleepInit, TRUE, TRUE)) return;
 
     EnterCriticalSection(&g_sleepLock);
 
@@ -150,7 +162,7 @@ void SleepDetect_RecordProtectEvent(PVOID baseAddress, ULONG newProtect)
 static DWORD WINAPI SleepDetectCleanupThread(LPVOID /*param*/)
 {
     while (g_sleepRunning.load()) {
-        Sleep(30000);
+        WaitForSingleObject(g_sleepShutdownEvent, 30000);
         if (!g_sleepRunning.load()) break;
 
         EnterCriticalSection(&g_sleepLock);
@@ -190,12 +202,14 @@ static DWORD WINAPI SleepDetectCleanupThread(LPVOID /*param*/)
  * ============================================================================ */
 BOOL SleepDetect_Start()
 {
-    if (g_sleepInit) return TRUE;
+    if (InterlockedCompareExchange(&g_sleepInit, FALSE, FALSE)) return TRUE;
 
     InitializeCriticalSection(&g_sleepLock);
     ZeroMemory(g_trackers, sizeof(g_trackers));
     g_trackerCount = 0;
-    g_sleepInit = TRUE;
+
+    g_sleepShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    InterlockedExchange(&g_sleepInit, TRUE);
 
     g_sleepRunning.store(true);
     g_hCheckThread = CreateThread(nullptr, 0, SleepDetectCleanupThread, nullptr, 0, nullptr);
@@ -209,9 +223,10 @@ BOOL SleepDetect_Start()
  * ============================================================================ */
 void SleepDetect_Stop()
 {
-    if (!g_sleepInit) return;
+    if (!InterlockedExchange(&g_sleepInit, FALSE)) return;
 
     g_sleepRunning.store(false);
+    if (g_sleepShutdownEvent) SetEvent(g_sleepShutdownEvent);
 
     if (g_hCheckThread) {
         WaitForSingleObject(g_hCheckThread, 5000);
@@ -219,6 +234,12 @@ void SleepDetect_Stop()
         g_hCheckThread = nullptr;
     }
 
+    if (g_sleepShutdownEvent) {
+        CloseHandle(g_sleepShutdownEvent);
+        g_sleepShutdownEvent = NULL;
+    }
+
+    /* Small delay to let any in-flight RecordProtectEvent calls complete */
+    Sleep(10);
     DeleteCriticalSection(&g_sleepLock);
-    g_sleepInit = FALSE;
 }

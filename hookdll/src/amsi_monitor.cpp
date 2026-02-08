@@ -20,6 +20,8 @@ static BYTE         g_amsiSnapshot[AMSI_PROLOGUE_SIZE] = {};
 static PVOID        g_pAmsiScanBuffer = nullptr;
 static HANDLE       g_hMonitorThread = nullptr;
 static std::atomic<bool> g_amsiRunning{false};
+static BOOL         g_amsiPatchReported = FALSE;
+static HANDLE       g_amsiShutdownEvent = NULL;
 
 /* ============================================================================
  * Internal: Check for known bypass patterns
@@ -75,7 +77,7 @@ static BOOL DetectBypassPattern(const BYTE* current, const BYTE* original, WCHAR
 static DWORD WINAPI AmsiMonitorThread(LPVOID /*param*/)
 {
     while (g_amsiRunning.load()) {
-        Sleep(AMSI_CHECK_INTERVAL);
+        WaitForSingleObject(g_amsiShutdownEvent, AMSI_CHECK_INTERVAL);
 
         if (!g_amsiRunning.load()) break;
         if (!g_pAmsiScanBuffer) continue;
@@ -84,19 +86,24 @@ static DWORD WINAPI AmsiMonitorThread(LPVOID /*param*/)
             BYTE current[AMSI_PROLOGUE_SIZE];
             memcpy(current, g_pAmsiScanBuffer, AMSI_PROLOGUE_SIZE);
 
-            WCHAR details[256] = {};
-            if (DetectBypassPattern(current, g_amsiSnapshot, details, _countof(details))) {
-                SENTINEL_MEMORY_EVENT evt;
-                BuildMemoryEvent(&evt, EVENT_AMSI_BYPASS);
-                evt.BaseAddress = g_pAmsiScanBuffer;
-                evt.RegionSize = AMSI_PROLOGUE_SIZE;
-                evt.CallstackDepth = 0; /* No callstack - periodic check */
-                wcsncpy_s(evt.Details, details, _TRUNCATE);
+            if (memcmp(current, g_amsiSnapshot, AMSI_PROLOGUE_SIZE) != 0) {
+                if (!g_amsiPatchReported) {
+                    WCHAR details[256] = {};
+                    if (DetectBypassPattern(current, g_amsiSnapshot, details, _countof(details))) {
+                        SENTINEL_MEMORY_EVENT evt;
+                        BuildMemoryEvent(&evt, EVENT_AMSI_BYPASS);
+                        evt.BaseAddress = g_pAmsiScanBuffer;
+                        evt.RegionSize = AMSI_PROLOGUE_SIZE;
+                        evt.CallstackDepth = 0;
+                        wcsncpy_s(evt.Details, details, _TRUNCATE);
 
-                HookComm_SendEvent(&evt);
-
-                /* Re-snapshot so we don't spam (only alert once per modification) */
-                memcpy(g_amsiSnapshot, current, AMSI_PROLOGUE_SIZE);
+                        HookComm_SendEvent(&evt);
+                        g_amsiPatchReported = TRUE;
+                    }
+                }
+                /* Do NOT update g_amsiSnapshot - keep original baseline */
+            } else {
+                g_amsiPatchReported = FALSE; /* bytes restored, allow re-detection */
             }
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             /* amsi.dll may have been unloaded */
@@ -134,10 +141,17 @@ BOOL AmsiMonitor_Start()
         }
     }
 
+    g_amsiShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!g_amsiShutdownEvent) {
+        return FALSE;
+    }
+
     g_amsiRunning.store(true);
     g_hMonitorThread = CreateThread(nullptr, 0, AmsiMonitorThread, nullptr, 0, nullptr);
     if (!g_hMonitorThread) {
         g_amsiRunning.store(false);
+        CloseHandle(g_amsiShutdownEvent);
+        g_amsiShutdownEvent = NULL;
         return FALSE;
     }
 
@@ -152,12 +166,19 @@ void AmsiMonitor_Stop()
     if (!g_amsiRunning.load()) return;
 
     g_amsiRunning.store(false);
+    if (g_amsiShutdownEvent) SetEvent(g_amsiShutdownEvent);
 
     if (g_hMonitorThread) {
-        WaitForSingleObject(g_hMonitorThread, 3000);
+        WaitForSingleObject(g_hMonitorThread, 5000);
         CloseHandle(g_hMonitorThread);
         g_hMonitorThread = nullptr;
     }
 
+    if (g_amsiShutdownEvent) {
+        CloseHandle(g_amsiShutdownEvent);
+        g_amsiShutdownEvent = NULL;
+    }
+
     g_pAmsiScanBuffer = nullptr;
+    g_amsiPatchReported = FALSE;
 }

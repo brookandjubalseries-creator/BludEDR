@@ -7,9 +7,9 @@
 
 #include "../inc/driver.h"
 
-#ifdef ALLOC_PRAGMA
-#pragma alloc_text(PAGE, BludRegistryCallback)
-#endif
+/* BludRegistryCallback is intentionally NOT placed in the PAGE section.
+ * CmRegisterCallbackEx callbacks can run at APC_LEVEL, where paged code
+ * may be swapped out, leading to a BSOD. */
 
 /* ============================================================================
  * Persistence path patterns to monitor
@@ -106,7 +106,13 @@ BludpIsPersistenceKey(
                 sub.MaximumLength = patternString.Length;
 
                 if (RtlEqualUnicodeString(&sub, &patternString, TRUE)) {
-                    return TRUE;
+                    /*
+                     * Verify the match is at a path boundary: either at
+                     * the start of the string or preceded by a backslash.
+                     */
+                    if (i == 0 || KeyName->Buffer[i - 1] == L'\\') {
+                        return TRUE;
+                    }
                 }
             }
         }
@@ -128,6 +134,9 @@ BludpGetObjectName(
     NTSTATUS status;
     ULONG    returnLength = 0;
     POBJECT_NAME_INFORMATION nameInfo = NULL;
+
+    /* This function uses paged pool; must not be called above APC_LEVEL */
+    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
 
     *FreeBuffer = NULL;
     RtlInitUnicodeString(Name, NULL);
@@ -173,11 +182,11 @@ BludRegistryCallback(
     PREG_SET_VALUE_KEY_INFORMATION setValueInfo;
     UNICODE_STRING          keyName;
     PVOID                   freeBuffer = NULL;
-    SENTINEL_REGISTRY_EVENT regEvent;
+    PSENTINEL_REGISTRY_EVENT pRegEvent = NULL;
     NTSTATUS                status;
     BOOLEAN                 isPersistence;
 
-    PAGED_CODE();
+    /* Not paged -- this callback can run at APC_LEVEL */
     UNREFERENCED_PARAMETER(CallbackContext);
 
     notifyClass = (REG_NOTIFY_CLASS)(ULONG_PTR)Argument1;
@@ -213,12 +222,22 @@ BludRegistryCallback(
         return STATUS_SUCCESS;
     }
 
-    /* Build registry event */
-    RtlZeroMemory(&regEvent, sizeof(regEvent));
-    BludFillEventHeader(&regEvent.Header, EVENT_REGISTRY_SET_VALUE, sizeof(regEvent));
+    /* Allocate registry event from pool to avoid ~2.8KB stack usage */
+    pRegEvent = (PSENTINEL_REGISTRY_EVENT)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED, sizeof(SENTINEL_REGISTRY_EVENT), 'REvt');
+    if (!pRegEvent) {
+        if (freeBuffer != NULL) {
+            ExFreePoolWithTag(freeBuffer, BLUD_POOL_TAG);
+        }
+        return STATUS_SUCCESS;
+    }
 
-    regEvent.Operation        = (ULONG)notifyClass;
-    regEvent.IsPersistenceKey = TRUE;
+    /* Build registry event */
+    RtlZeroMemory(pRegEvent, sizeof(*pRegEvent));
+    BludFillEventHeader(&pRegEvent->Header, EVENT_REGISTRY_SET_VALUE, sizeof(*pRegEvent));
+
+    pRegEvent->Operation        = (ULONG)notifyClass;
+    pRegEvent->IsPersistenceKey = TRUE;
 
     /* Copy key name */
     {
@@ -226,7 +245,7 @@ BludRegistryCallback(
         if (copyLen > (SENTINEL_MAX_REGKEY - 1) * sizeof(WCHAR)) {
             copyLen = (SENTINEL_MAX_REGKEY - 1) * sizeof(WCHAR);
         }
-        RtlCopyMemory(regEvent.KeyName, keyName.Buffer, copyLen);
+        RtlCopyMemory(pRegEvent->KeyName, keyName.Buffer, copyLen);
     }
 
     /* Copy value name */
@@ -237,7 +256,7 @@ BludRegistryCallback(
         if (copyLen > (SENTINEL_MAX_REGVALUE - 1) * sizeof(WCHAR)) {
             copyLen = (SENTINEL_MAX_REGVALUE - 1) * sizeof(WCHAR);
         }
-        RtlCopyMemory(regEvent.ValueName,
+        RtlCopyMemory(pRegEvent->ValueName,
                        setValueInfo->ValueName->Buffer,
                        copyLen);
     }
@@ -248,18 +267,20 @@ BludRegistryCallback(
         if (copySize > SENTINEL_MAX_REGDATA) {
             copySize = SENTINEL_MAX_REGDATA;
         }
-        RtlCopyMemory(regEvent.Data, setValueInfo->Data, copySize);
-        regEvent.DataSize = copySize;
+        RtlCopyMemory(pRegEvent->Data, setValueInfo->Data, copySize);
+        pRegEvent->DataSize = copySize;
     }
 
-    regEvent.DataType = setValueInfo->Type;
+    pRegEvent->DataType = setValueInfo->Type;
 
     if (freeBuffer != NULL) {
         ExFreePoolWithTag(freeBuffer, BLUD_POOL_TAG);
     }
 
     /* Enqueue the event */
-    BludEnqueueEvent(&g_Globals.EventQueue, &regEvent, sizeof(regEvent));
+    BludEnqueueEvent(&g_Globals.EventQueue, pRegEvent, sizeof(*pRegEvent));
+
+    ExFreePoolWithTag(pRegEvent, 'REvt');
 
     return STATUS_SUCCESS;
 }

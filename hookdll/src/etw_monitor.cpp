@@ -20,15 +20,17 @@ struct EtwTarget {
     PVOID       pFunction;
     BYTE        snapshot[ETW_PROLOGUE_SIZE];
     BOOL        valid;
+    BOOL        reported;
 };
 
 static EtwTarget g_etwTargets[2] = {
-    { "EtwEventWrite", nullptr, {}, FALSE },
-    { "NtTraceEvent",  nullptr, {}, FALSE },
+    { "EtwEventWrite", nullptr, {}, FALSE, FALSE },
+    { "NtTraceEvent",  nullptr, {}, FALSE, FALSE },
 };
 
 static HANDLE               g_hMonitorThread = nullptr;
 static std::atomic<bool>    g_etwRunning{false};
+static HANDLE               g_etwShutdownEvent = NULL;
 
 /* ============================================================================
  * Internal: Check for known bypass patterns
@@ -85,7 +87,7 @@ static BOOL DetectEtwBypassPattern(const BYTE* current, const BYTE* original,
 static DWORD WINAPI EtwMonitorThread(LPVOID /*param*/)
 {
     while (g_etwRunning.load()) {
-        Sleep(ETW_CHECK_INTERVAL);
+        WaitForSingleObject(g_etwShutdownEvent, ETW_CHECK_INTERVAL);
 
         if (!g_etwRunning.load()) break;
 
@@ -97,21 +99,26 @@ static DWORD WINAPI EtwMonitorThread(LPVOID /*param*/)
                 BYTE current[ETW_PROLOGUE_SIZE];
                 memcpy(current, g_etwTargets[i].pFunction, ETW_PROLOGUE_SIZE);
 
-                WCHAR details[256] = {};
-                if (DetectEtwBypassPattern(current, g_etwTargets[i].snapshot,
-                                           g_etwTargets[i].funcName,
-                                           details, _countof(details))) {
-                    SENTINEL_MEMORY_EVENT evt;
-                    BuildMemoryEvent(&evt, EVENT_ETW_BYPASS);
-                    evt.BaseAddress = g_etwTargets[i].pFunction;
-                    evt.RegionSize = ETW_PROLOGUE_SIZE;
-                    evt.CallstackDepth = 0;
-                    wcsncpy_s(evt.Details, details, _TRUNCATE);
+                if (memcmp(current, g_etwTargets[i].snapshot, ETW_PROLOGUE_SIZE) != 0) {
+                    if (!g_etwTargets[i].reported) {
+                        WCHAR details[256] = {};
+                        if (DetectEtwBypassPattern(current, g_etwTargets[i].snapshot,
+                                                   g_etwTargets[i].funcName,
+                                                   details, _countof(details))) {
+                            SENTINEL_MEMORY_EVENT evt;
+                            BuildMemoryEvent(&evt, EVENT_ETW_BYPASS);
+                            evt.BaseAddress = g_etwTargets[i].pFunction;
+                            evt.RegionSize = ETW_PROLOGUE_SIZE;
+                            evt.CallstackDepth = 0;
+                            wcsncpy_s(evt.Details, details, _TRUNCATE);
 
-                    HookComm_SendEvent(&evt);
-
-                    /* Re-snapshot to avoid spamming */
-                    memcpy(g_etwTargets[i].snapshot, current, ETW_PROLOGUE_SIZE);
+                            HookComm_SendEvent(&evt);
+                            g_etwTargets[i].reported = TRUE;
+                        }
+                    }
+                    /* Do NOT update snapshot - keep original baseline */
+                } else {
+                    g_etwTargets[i].reported = FALSE; /* bytes restored */
                 }
             } __except (EXCEPTION_EXECUTE_HANDLER) {
                 g_etwTargets[i].valid = FALSE;
@@ -150,10 +157,13 @@ BOOL EtwMonitor_Start()
         }
     }
 
+    g_etwShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
     g_etwRunning.store(true);
     g_hMonitorThread = CreateThread(nullptr, 0, EtwMonitorThread, nullptr, 0, nullptr);
     if (!g_hMonitorThread) {
         g_etwRunning.store(false);
+        CloseHandle(g_etwShutdownEvent);
+        g_etwShutdownEvent = NULL;
         return FALSE;
     }
 
@@ -168,10 +178,16 @@ void EtwMonitor_Stop()
     if (!g_etwRunning.load()) return;
 
     g_etwRunning.store(false);
+    if (g_etwShutdownEvent) SetEvent(g_etwShutdownEvent);
 
     if (g_hMonitorThread) {
-        WaitForSingleObject(g_hMonitorThread, 3000);
+        WaitForSingleObject(g_hMonitorThread, 5000);
         CloseHandle(g_hMonitorThread);
         g_hMonitorThread = nullptr;
+    }
+
+    if (g_etwShutdownEvent) {
+        CloseHandle(g_etwShutdownEvent);
+        g_etwShutdownEvent = NULL;
     }
 }

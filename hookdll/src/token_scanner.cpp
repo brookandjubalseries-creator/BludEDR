@@ -32,11 +32,12 @@ static const TokenPattern g_patterns[] = {
     { "AKIA",                    4, L"AWS Access Key" },
     { "ABIA",                    4, L"AWS STS Token" },
     { "AROA",                    4, L"AWS IAM Role" },
-    { "sk-",                     3, L"API Secret Key (sk-)" },
+    { "sk-proj-",                8, L"API Secret Key (sk-proj-)" },
     { "ghp_",                    4, L"GitHub PAT" },
     { "gho_",                    4, L"GitHub OAuth Token" },
     { "glpat-",                  6, L"GitLab PAT" },
-    { "xox",                     3, L"Slack Token" },
+    { "xoxb-",                   5, L"Slack Bot Token" },
+    { "xoxp-",                   5, L"Slack User Token" },
 };
 static constexpr SIZE_T NUM_PATTERNS = sizeof(g_patterns) / sizeof(g_patterns[0]);
 
@@ -46,6 +47,7 @@ static constexpr SIZE_T NUM_PATTERNS = sizeof(g_patterns) / sizeof(g_patterns[0]
 
 static HANDLE               g_hScanThread = nullptr;
 static std::atomic<bool>    g_tokenScanRunning{false};
+static HANDLE               g_tokenShutdownEvent = NULL;
 
 /* Track reported tokens (hash of location + first bytes) to avoid duplicates */
 static std::unordered_map<ULONG_PTR, ULONGLONG>* g_pReportedTokens = nullptr;
@@ -127,7 +129,7 @@ static BOOL ShouldReportToken(ULONG_PTR matchAddr)
 static DWORD WINAPI TokenScanThread(LPVOID /*param*/)
 {
     while (g_tokenScanRunning.load()) {
-        Sleep(TOKEN_SCAN_INTERVAL);
+        WaitForSingleObject(g_tokenShutdownEvent, TOKEN_SCAN_INTERVAL);
 
         if (!g_tokenScanRunning.load()) break;
 
@@ -144,6 +146,12 @@ static DWORD WINAPI TokenScanThread(LPVOID /*param*/)
                     reinterpret_cast<PVOID>(addr), &mbi, sizeof(mbi));
 
                 if (result == 0) break;
+
+                /* Guard against zero RegionSize to prevent infinite loop */
+                if (mbi.RegionSize == 0) {
+                    addr += 0x1000;
+                    continue;
+                }
 
                 /* Only scan MEM_PRIVATE + PAGE_READWRITE (heap-like) */
                 if (mbi.State == MEM_COMMIT &&
@@ -214,12 +222,15 @@ BOOL TokenScanner_Start()
     g_pReportedTokens = new (std::nothrow) std::unordered_map<ULONG_PTR, ULONGLONG>();
     if (!g_pReportedTokens) return FALSE;
 
+    g_tokenShutdownEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
     g_tokenScanRunning.store(true);
     g_hScanThread = CreateThread(nullptr, 0, TokenScanThread, nullptr, 0, nullptr);
     if (!g_hScanThread) {
         g_tokenScanRunning.store(false);
         delete g_pReportedTokens;
         g_pReportedTokens = nullptr;
+        CloseHandle(g_tokenShutdownEvent);
+        g_tokenShutdownEvent = NULL;
         DeleteCriticalSection(&g_tokenReportLock);
         return FALSE;
     }
@@ -235,6 +246,7 @@ void TokenScanner_Stop()
     if (!g_tokenScanRunning.load()) return;
 
     g_tokenScanRunning.store(false);
+    if (g_tokenShutdownEvent) SetEvent(g_tokenShutdownEvent);
 
     if (g_hScanThread) {
         WaitForSingleObject(g_hScanThread, 15000);
@@ -242,10 +254,16 @@ void TokenScanner_Stop()
         g_hScanThread = nullptr;
     }
 
+    if (g_tokenShutdownEvent) {
+        CloseHandle(g_tokenShutdownEvent);
+        g_tokenShutdownEvent = NULL;
+    }
+
     EnterCriticalSection(&g_tokenReportLock);
     delete g_pReportedTokens;
     g_pReportedTokens = nullptr;
     LeaveCriticalSection(&g_tokenReportLock);
 
+    Sleep(10);
     DeleteCriticalSection(&g_tokenReportLock);
 }

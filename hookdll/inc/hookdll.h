@@ -110,7 +110,7 @@ typedef PVOID(WINAPI* pfnAddVectoredExceptionHandler)(
 
 extern HMODULE              g_hThisDll;
 extern DWORD                g_dwCurrentPid;
-extern BOOL                 g_bHooksInstalled;
+extern volatile LONG        g_bHooksInstalled;
 extern std::atomic<bool>    g_bShutdown;
 
 /* ============================================================================
@@ -172,7 +172,7 @@ void    SleepDetect_Stop();
 /* pe_utils.cpp */
 HMODULE PeUtils_GetModuleFromAddress(PVOID addr);
 BOOL    PeUtils_IsAddressInModule(PVOID addr);
-PVOID   PeUtils_GetExportAddress(HMODULE hMod, const char* pszName);
+PVOID   PeUtils_GetExportAddress(HMODULE hMod, const char* pszName, int depth = 0);
 BOOL    PeUtils_ValidateModuleIntegrity(HMODULE hMod);
 
 /* ============================================================================
@@ -200,7 +200,9 @@ inline BOOL IsCurrentProcess(HANDLE hProcess)
         hProcess == GetCurrentProcess()) {
         return TRUE;
     }
-    if (GetProcessId(hProcess) == GetCurrentProcessId()) {
+    DWORD pid = GetProcessId(hProcess);
+    if (pid == 0) return FALSE;
+    if (pid == GetCurrentProcessId()) {
         return TRUE;
     }
     return FALSE;

@@ -13,8 +13,9 @@
 
 static std::vector<ModuleRange>     g_moduleCache;
 static CRITICAL_SECTION             g_moduleCacheLock;
-static volatile ULONGLONG           g_lastRefreshTick = 0;
+static volatile LONGLONG            g_lastRefreshTick = 0;
 static BOOL                         g_cacheInit = FALSE;
+static INIT_ONCE                    g_initOnce = INIT_ONCE_STATIC_INIT;
 
 /* ============================================================================
  * Internal: Refresh the module cache
@@ -22,8 +23,17 @@ static BOOL                         g_cacheInit = FALSE;
 static void RefreshModuleCache()
 {
     ULONGLONG now = GetTickCount64();
-    if (g_lastRefreshTick != 0 && (now - g_lastRefreshTick) < CALLSTACK_MODULE_CACHE_INTERVAL)
-        return;
+
+    /* Check staleness under the lock to avoid TOCTOU race */
+    if (g_cacheInit) {
+        EnterCriticalSection(&g_moduleCacheLock);
+        LONGLONG lastTick = InterlockedCompareExchange64(&g_lastRefreshTick, 0, 0);
+        if (lastTick != 0 && (now - (ULONGLONG)lastTick) < CALLSTACK_MODULE_CACHE_INTERVAL) {
+            LeaveCriticalSection(&g_moduleCacheLock);
+            return;
+        }
+        LeaveCriticalSection(&g_moduleCacheLock);
+    }
 
     HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
                                             GetCurrentProcessId());
@@ -56,20 +66,24 @@ static void RefreshModuleCache()
 
     EnterCriticalSection(&g_moduleCacheLock);
     g_moduleCache = std::move(newCache);
-    g_lastRefreshTick = now;
+    InterlockedExchange64(&g_lastRefreshTick, (LONGLONG)now);
     LeaveCriticalSection(&g_moduleCacheLock);
 }
 
 /* ============================================================================
  * Internal: Initialize cache lock if needed
  * ============================================================================ */
+static BOOL CALLBACK CacheInitCallback(PINIT_ONCE, PVOID, PVOID*)
+{
+    InitializeCriticalSection(&g_moduleCacheLock);
+    g_cacheInit = TRUE;
+    RefreshModuleCache();
+    return TRUE;
+}
+
 static void EnsureCacheInit()
 {
-    if (!g_cacheInit) {
-        InitializeCriticalSection(&g_moduleCacheLock);
-        g_cacheInit = TRUE;
-        RefreshModuleCache();
-    }
+    InitOnceExecuteOnce(&g_initOnce, CacheInitCallback, nullptr, nullptr);
 }
 
 /* ============================================================================
@@ -148,6 +162,6 @@ BOOL IsCallstackSuspicious(PVOID* pFrames, ULONG frameCount)
 void CallstackCache_Refresh()
 {
     EnsureCacheInit();
-    g_lastRefreshTick = 0; /* Force refresh on next call */
+    InterlockedExchange64(&g_lastRefreshTick, 0); /* Force refresh on next call */
     RefreshModuleCache();
 }

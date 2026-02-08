@@ -22,4 +22,5 @@ struct RegionTracker {
     ProtectRecord   history[SLEEP_DETECT_HISTORY_SIZE];
     ULONG           writeIndex;
     ULONG           count;
+    ULONGLONG       lastTick;   /* Last access time for LRU eviction */
 };

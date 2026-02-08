@@ -42,13 +42,13 @@ void WfpMonitor::Shutdown() {
 
 void WfpMonitor::MonitorThread() {
     /* Track known connections to detect new ones */
-    std::unordered_map<ULONGLONG, bool> knownConns;
+    std::unordered_map<ConnectionKey, bool, ConnectionKeyHash> knownConns;
     DWORD pollCount = 0;
 
     while (m_running) {
         Sleep(1000); /* Poll every second */
 
-        std::unordered_map<ULONGLONG, bool> currentConns;
+        std::unordered_map<ConnectionKey, bool, ConnectionKeyHash> currentConns;
 
         /* Enumerate TCP connections */
         DWORD size = 0;
@@ -71,14 +71,15 @@ void WfpMonitor::MonitorThread() {
                     /* Skip loopback */
                     if (row.dwRemoteAddr == htonl(INADDR_LOOPBACK)) continue;
 
-                    /* Create unique connection ID */
-                    ULONGLONG connId = ((ULONGLONG)row.dwOwningPid << 48) |
-                                       ((ULONGLONG)row.dwRemoteAddr << 16) |
-                                       (ULONGLONG)ntohs((USHORT)row.dwRemotePort);
-                    currentConns[connId] = true;
+                    /* Create unique connection key */
+                    ConnectionKey connKey;
+                    connKey.pid = row.dwOwningPid;
+                    connKey.remoteAddr = row.dwRemoteAddr;
+                    connKey.remotePort = ntohs((USHORT)row.dwRemotePort);
+                    currentConns[connKey] = true;
 
                     /* Check if this is a new connection */
-                    if (knownConns.find(connId) == knownConns.end()) {
+                    if (knownConns.find(connKey) == knownConns.end()) {
                         LARGE_INTEGER now;
                         QueryPerformanceCounter(&now);
 
@@ -100,8 +101,10 @@ void WfpMonitor::MonitorThread() {
                             m_processConns[conn.ProcessId].Push(conn);
 
                             /* Track for beaconing */
-                            ULONGLONG beaconKey = ((ULONGLONG)conn.ProcessId << 32) |
-                                                  ((ULONGLONG)conn.RemoteAddress);
+                            ConnectionKey beaconKey;
+                            beaconKey.pid = conn.ProcessId;
+                            beaconKey.remoteAddr = conn.RemoteAddress;
+                            beaconKey.remotePort = conn.RemotePort;
                             m_beaconTrackers[beaconKey].Push(now.QuadPart);
                         }
 
@@ -129,8 +132,8 @@ void WfpMonitor::AnalyzeBeaconing() {
     for (auto& [key, tracker] : m_beaconTrackers) {
         if (tracker.Timestamps.size() < 5) continue; /* Need enough samples */
 
-        DWORD pid = (DWORD)(key >> 32);
-        ULONG remoteAddr = (ULONG)(key & 0xFFFFFFFF);
+        DWORD pid = key.pid;
+        ULONG remoteAddr = key.remoteAddr;
 
         /* Calculate mean interval */
         std::vector<double> intervals;
@@ -170,7 +173,7 @@ void WfpMonitor::AnalyzeBeaconing() {
                 BeaconingInfo info;
                 info.ProcessId = pid;
                 info.RemoteAddress = remoteAddr;
-                info.RemotePort = 0; /* Not tracked in key */
+                info.RemotePort = key.remotePort;
                 info.ConnectionCount = (int)tracker.Timestamps.size();
                 info.MeanIntervalMs = mean;
                 info.JitterPercent = jitter;
