@@ -8,12 +8,114 @@
 #pragma once
 
 #include <fltKernel.h>
-#include <ntddk.h>
-#include <wdm.h>
+#include <ntifs.h>
 #include <ntstrsafe.h>
 
-#define _KERNEL_MODE 1
 #include "..\..\shared\sentinel_shared.h"
+
+/* ============================================================================
+ * Kernel-mode constants not always available in WDK headers
+ * These are the standard process access rights from winnt.h
+ * ============================================================================ */
+#ifndef PROCESS_TERMINATE
+#define PROCESS_TERMINATE           0x0001
+#endif
+#ifndef PROCESS_CREATE_THREAD
+#define PROCESS_CREATE_THREAD       0x0002
+#endif
+#ifndef PROCESS_VM_OPERATION
+#define PROCESS_VM_OPERATION        0x0008
+#endif
+#ifndef PROCESS_VM_READ
+#define PROCESS_VM_READ             0x0010
+#endif
+#ifndef PROCESS_VM_WRITE
+#define PROCESS_VM_WRITE            0x0020
+#endif
+#ifndef PROCESS_DUP_HANDLE
+#define PROCESS_DUP_HANDLE          0x0040
+#endif
+
+/* ============================================================================
+ * ZwQuerySystemInformation - not always declared in all WDK header combos
+ * ============================================================================ */
+#ifndef SystemProcessInformation
+#define SystemProcessInformation 5
+#endif
+
+NTSYSCALLAPI
+NTSTATUS
+NTAPI
+ZwQuerySystemInformation(
+    _In_      ULONG  SystemInformationClass,
+    _Out_opt_ PVOID  SystemInformation,
+    _In_      ULONG  SystemInformationLength,
+    _Out_opt_ PULONG ReturnLength
+    );
+
+/*
+ * SYSTEM_PROCESS_INFORMATION - defined here if not already provided.
+ * We only need the fields used in BludpResolveLsassPid.
+ */
+#ifndef _SYSTEM_PROCESS_INFORMATION_DEFINED
+#define _SYSTEM_PROCESS_INFORMATION_DEFINED
+typedef struct _SYSTEM_PROCESS_INFORMATION {
+    ULONG           NextEntryOffset;
+    ULONG           NumberOfThreads;
+    LARGE_INTEGER   WorkingSetPrivateSize;
+    ULONG           HardFaultCount;
+    ULONG           NumberOfThreadsHighWatermark;
+    ULONGLONG       CycleTime;
+    LARGE_INTEGER   CreateTime;
+    LARGE_INTEGER   UserTime;
+    LARGE_INTEGER   KernelTime;
+    UNICODE_STRING  ImageName;
+    LONG            BasePriority;
+    HANDLE          UniqueProcessId;
+    HANDLE          InheritedFromUniqueProcessId;
+    ULONG           HandleCount;
+    ULONG           SessionId;
+    ULONG_PTR       UniqueProcessKey;
+    SIZE_T          PeakVirtualSize;
+    SIZE_T          VirtualSize;
+    ULONG           PageFaultCount;
+    SIZE_T          PeakWorkingSetSize;
+    SIZE_T          WorkingSetSize;
+    SIZE_T          QuotaPeakPagedPoolUsage;
+    SIZE_T          QuotaPagedPoolUsage;
+    SIZE_T          QuotaPeakNonPagedPoolUsage;
+    SIZE_T          QuotaNonPagedPoolUsage;
+    SIZE_T          PagefileUsage;
+    SIZE_T          PeakPagefileUsage;
+    SIZE_T          PrivatePageCount;
+    LARGE_INTEGER   ReadOperationCount;
+    LARGE_INTEGER   WriteOperationCount;
+    LARGE_INTEGER   OtherOperationCount;
+    LARGE_INTEGER   ReadTransferCount;
+    LARGE_INTEGER   WriteTransferCount;
+    LARGE_INTEGER   OtherTransferCount;
+} SYSTEM_PROCESS_INFORMATION, *PSYSTEM_PROCESS_INFORMATION;
+#endif /* _SYSTEM_PROCESS_INFORMATION_DEFINED */
+
+/* ============================================================================
+ * Undocumented / semi-documented kernel APIs used by the driver
+ * ============================================================================ */
+
+/* PsSuspendProcess - suspends all threads in a process */
+NTSYSCALLAPI
+NTSTATUS
+NTAPI
+PsSuspendProcess(
+    _In_ PEPROCESS Process
+    );
+
+/* PsGetThreadStartAddress - gets the user-mode start address of a thread */
+NTSYSCALLAPI
+PVOID
+NTAPI
+PsGetThreadStartAddress(
+    _In_ PETHREAD Thread
+    );
 
 /* ============================================================================
  * Compile-time configuration

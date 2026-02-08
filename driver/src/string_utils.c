@@ -142,8 +142,8 @@ BludCompareExtension(
     _In_ PCWSTR           ExtensionList
     )
 {
-    UNICODE_STRING extension;
-    UNICODE_STRING candidate;
+    UNICODE_STRING extension = { 0, 0, NULL };
+    UNICODE_STRING candidate = { 0, 0, NULL };
     PCWSTR         listPtr;
     PCWSTR         extStart;
 

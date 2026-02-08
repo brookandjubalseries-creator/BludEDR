@@ -60,23 +60,12 @@ static const FLT_REGISTRATION g_FilterRegistration = {
 
 /* ============================================================================
  * Object callback registration (for LSASS protection)
+ * Note: PsProcessType is an extern pointer, not a compile-time constant,
+ * so ObjectType must be set at runtime in BludpRegisterCallbacks.
  * ============================================================================ */
-static OB_OPERATION_REGISTRATION g_ObOperationRegistration[] = {
-    {
-        PsProcessType,
-        OB_OPERATION_HANDLE_CREATE | OB_OPERATION_HANDLE_DUPLICATE,
-        BludObPreOperationCallback,
-        BludObPostOperationCallback
-    }
-};
-
-static OB_CALLBACK_REGISTRATION g_ObCallbackRegistration = {
-    OB_FLT_REGISTRATION_VERSION,
-    1,
-    RTL_CONSTANT_STRING(L"385200"),
-    NULL,
-    g_ObOperationRegistration
-};
+static OB_OPERATION_REGISTRATION g_ObOperationRegistration[1];
+static OB_CALLBACK_REGISTRATION g_ObCallbackRegistration;
+static UNICODE_STRING g_ObAltitude = RTL_CONSTANT_STRING(L"385200");
 
 /* ============================================================================
  * Forward declarations for local helpers
@@ -304,6 +293,7 @@ BludpRegisterCallbacks(
     }
 
     /* Registry */
+    {
     UNICODE_STRING altitude = RTL_CONSTANT_STRING(BLUD_ALTITUDE);
     status = CmRegisterCallbackEx(BludRegistryCallback,
                                    &altitude,
@@ -317,8 +307,20 @@ BludpRegisterCallbacks(
         KdPrintEx((DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
             "BludEDR: CmRegisterCallbackEx failed 0x%08X\n", status));
     }
+    } /* end altitude block scope */
 
-    /* Object callbacks (LSASS protection) */
+    /* Object callbacks (LSASS protection) - init at runtime since PsProcessType is extern */
+    g_ObOperationRegistration[0].ObjectType = PsProcessType;
+    g_ObOperationRegistration[0].Operations = OB_OPERATION_HANDLE_CREATE | OB_OPERATION_HANDLE_DUPLICATE;
+    g_ObOperationRegistration[0].PreOperation = BludObPreOperationCallback;
+    g_ObOperationRegistration[0].PostOperation = BludObPostOperationCallback;
+
+    g_ObCallbackRegistration.Version = OB_FLT_REGISTRATION_VERSION;
+    g_ObCallbackRegistration.OperationRegistrationCount = 1;
+    g_ObCallbackRegistration.Altitude = g_ObAltitude;
+    g_ObCallbackRegistration.RegistrationContext = NULL;
+    g_ObCallbackRegistration.OperationRegistration = g_ObOperationRegistration;
+
     status = ObRegisterCallbacks(&g_ObCallbackRegistration, &g_Globals.ObCallbackHandle);
     if (NT_SUCCESS(status)) {
         g_Globals.ObCallbackRegistered = TRUE;

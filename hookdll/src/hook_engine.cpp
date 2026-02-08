@@ -466,6 +466,66 @@ void HookEngine_Shutdown()
 }
 
 /* ============================================================================
+ * SEH-safe helper: does the dangerous memory patching without C++ objects
+ * ============================================================================ */
+static BOOL InstallHookSEH(
+    PVOID pTarget, PVOID pDetour, PVOID* ppOriginal,
+    HookEntry* pEntryOut)
+{
+    __try {
+        /* Step 1: Find instruction boundary >= ABSOLUTE_JMP_SIZE bytes */
+        DWORD prologueLen = 0;
+        const BYTE* pCode = (const BYTE*)pTarget;
+        while (prologueLen < ABSOLUTE_JMP_SIZE) {
+            DWORD instrLen = LDE_GetInstructionLength(pCode + prologueLen);
+            if (instrLen == 0) return FALSE;
+            prologueLen += instrLen;
+            if (prologueLen > 30) return FALSE;
+        }
+
+        /* Step 2: Allocate trampoline (prologue + absolute JMP = prologueLen + 14) */
+        SIZE_T trampolineSize = prologueLen + ABSOLUTE_JMP_SIZE;
+        PVOID pTrampoline = AllocateTrampoline(pTarget, trampolineSize);
+        if (!pTrampoline) return FALSE;
+
+        /* Step 3: Build the trampoline */
+        BYTE* pTrampolineBytes = (BYTE*)pTrampoline;
+        memcpy(pTrampolineBytes, pTarget, prologueLen);
+        WriteAbsoluteJmp(pTrampolineBytes + prologueLen,
+                         (BYTE*)pTarget + prologueLen);
+        FlushInstructionCache(GetCurrentProcess(), pTrampoline, trampolineSize);
+
+        /* Step 4: Save original bytes and overwrite target with JMP to detour */
+        pEntryOut->pTarget = pTarget;
+        pEntryOut->pDetour = pDetour;
+        pEntryOut->pTrampoline = pTrampoline;
+        pEntryOut->OriginalBytesLen = prologueLen;
+        memcpy(pEntryOut->OriginalBytes, pTarget, prologueLen);
+
+        DWORD oldProtect = 0;
+        if (!VirtualProtect(pTarget, prologueLen, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            VirtualFree(pTrampoline, 0, MEM_RELEASE);
+            return FALSE;
+        }
+        pEntryOut->OldProtect = oldProtect;
+
+        WriteAbsoluteJmp((BYTE*)pTarget, pDetour);
+        for (DWORD i = ABSOLUTE_JMP_SIZE; i < prologueLen; i++) {
+            ((BYTE*)pTarget)[i] = 0x90;
+        }
+
+        DWORD dummy = 0;
+        VirtualProtect(pTarget, prologueLen, oldProtect, &dummy);
+        FlushInstructionCache(GetCurrentProcess(), pTarget, prologueLen);
+
+        *ppOriginal = pTrampoline;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* ============================================================================
  * HookEngine_InstallHook
  * ============================================================================ */
 BOOL HookEngine_InstallHook(PVOID pTarget, PVOID pDetour, PVOID* ppOriginal)
@@ -482,90 +542,35 @@ BOOL HookEngine_InstallHook(PVOID pTarget, PVOID pDetour, PVOID* ppOriginal)
         }
     }
 
-    __try {
-        /* Step 1: Find instruction boundary >= ABSOLUTE_JMP_SIZE bytes */
-        DWORD prologueLen = 0;
-        const BYTE* pCode = static_cast<const BYTE*>(pTarget);
-        while (prologueLen < ABSOLUTE_JMP_SIZE) {
-            DWORD instrLen = LDE_GetInstructionLength(pCode + prologueLen);
-            if (instrLen == 0) {
-                /* Cannot disassemble - bail */
-                LeaveCriticalSection(&g_hookLock);
-                return FALSE;
-            }
-            prologueLen += instrLen;
-            /* Safety limit */
-            if (prologueLen > 30) {
-                LeaveCriticalSection(&g_hookLock);
-                return FALSE;
-            }
-        }
-
-        /* Step 2: Allocate trampoline (prologue + absolute JMP = prologueLen + 14) */
-        SIZE_T trampolineSize = prologueLen + ABSOLUTE_JMP_SIZE;
-        PVOID pTrampoline = AllocateTrampoline(pTarget, trampolineSize);
-        if (!pTrampoline) {
-            LeaveCriticalSection(&g_hookLock);
-            return FALSE;
-        }
-
-        /* Step 3: Build the trampoline */
-        BYTE* pTrampolineBytes = static_cast<BYTE*>(pTrampoline);
-
-        /* Copy original prologue to trampoline */
-        memcpy(pTrampolineBytes, pTarget, prologueLen);
-
-        /* Append absolute JMP back to target + prologueLen */
-        WriteAbsoluteJmp(pTrampolineBytes + prologueLen,
-                         static_cast<BYTE*>(pTarget) + prologueLen);
-
-        /* Flush instruction cache on the trampoline */
-        FlushInstructionCache(GetCurrentProcess(), pTrampoline, trampolineSize);
-
-        /* Step 4: Save original bytes and overwrite target with JMP to detour */
-        HookEntry entry = {};
-        entry.pTarget = pTarget;
-        entry.pDetour = pDetour;
-        entry.pTrampoline = pTrampoline;
-        entry.OriginalBytesLen = prologueLen;
-        memcpy(entry.OriginalBytes, pTarget, prologueLen);
-
-        /* Make target writable */
-        DWORD oldProtect = 0;
-        if (!VirtualProtect(pTarget, prologueLen, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-            VirtualFree(pTrampoline, 0, MEM_RELEASE);
-            LeaveCriticalSection(&g_hookLock);
-            return FALSE;
-        }
-        entry.OldProtect = oldProtect;
-
-        /* Write absolute JMP to detour at target */
-        WriteAbsoluteJmp(static_cast<BYTE*>(pTarget), pDetour);
-
-        /* NOP-fill remaining bytes if any */
-        for (DWORD i = ABSOLUTE_JMP_SIZE; i < prologueLen; i++) {
-            static_cast<BYTE*>(pTarget)[i] = 0x90;
-        }
-
-        /* Restore original protection */
-        DWORD dummy = 0;
-        VirtualProtect(pTarget, prologueLen, oldProtect, &dummy);
-
-        /* Flush instruction cache on the target */
-        FlushInstructionCache(GetCurrentProcess(), pTarget, prologueLen);
-
-        /* Return trampoline as the original function */
-        *ppOriginal = pTrampoline;
-
-        g_hooks.push_back(entry);
-
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        LeaveCriticalSection(&g_hookLock);
-        return FALSE;
+    HookEntry newEntry = {};
+    BOOL result = InstallHookSEH(pTarget, pDetour, ppOriginal, &newEntry);
+    if (result) {
+        g_hooks.push_back(newEntry);
     }
 
     LeaveCriticalSection(&g_hookLock);
-    return TRUE;
+    return result;
+}
+
+/* ============================================================================
+ * SEH-safe helper: restore original bytes and free trampoline
+ * ============================================================================ */
+static void RestoreHookSEH(const HookEntry* pEntry)
+{
+    __try {
+        DWORD oldProtect = 0;
+        if (VirtualProtect(pEntry->pTarget, pEntry->OriginalBytesLen, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            memcpy(pEntry->pTarget, pEntry->OriginalBytes, pEntry->OriginalBytesLen);
+            DWORD dummy = 0;
+            VirtualProtect(pEntry->pTarget, pEntry->OriginalBytesLen, oldProtect, &dummy);
+            FlushInstructionCache(GetCurrentProcess(), pEntry->pTarget, pEntry->OriginalBytesLen);
+        }
+        if (pEntry->pTrampoline) {
+            VirtualFree(pEntry->pTrampoline, 0, MEM_RELEASE);
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        /* Best effort - don't crash */
+    }
 }
 
 /* ============================================================================
@@ -579,24 +584,7 @@ BOOL HookEngine_RemoveHook(PVOID pTarget)
 
     for (auto it = g_hooks.begin(); it != g_hooks.end(); ++it) {
         if (it->pTarget == pTarget) {
-            __try {
-                /* Restore original bytes */
-                DWORD oldProtect = 0;
-                if (VirtualProtect(it->pTarget, it->OriginalBytesLen, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                    memcpy(it->pTarget, it->OriginalBytes, it->OriginalBytesLen);
-                    DWORD dummy = 0;
-                    VirtualProtect(it->pTarget, it->OriginalBytesLen, oldProtect, &dummy);
-                    FlushInstructionCache(GetCurrentProcess(), it->pTarget, it->OriginalBytesLen);
-                }
-
-                /* Free the trampoline */
-                if (it->pTrampoline) {
-                    VirtualFree(it->pTrampoline, 0, MEM_RELEASE);
-                }
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                /* Best effort - don't crash */
-            }
-
+            RestoreHookSEH(&(*it));
             g_hooks.erase(it);
             LeaveCriticalSection(&g_hookLock);
             return TRUE;
@@ -617,20 +605,7 @@ void HookEngine_RemoveAllHooks()
     EnterCriticalSection(&g_hookLock);
 
     for (auto& entry : g_hooks) {
-        __try {
-            DWORD oldProtect = 0;
-            if (VirtualProtect(entry.pTarget, entry.OriginalBytesLen, PAGE_EXECUTE_READWRITE, &oldProtect)) {
-                memcpy(entry.pTarget, entry.OriginalBytes, entry.OriginalBytesLen);
-                DWORD dummy = 0;
-                VirtualProtect(entry.pTarget, entry.OriginalBytesLen, oldProtect, &dummy);
-                FlushInstructionCache(GetCurrentProcess(), entry.pTarget, entry.OriginalBytesLen);
-            }
-            if (entry.pTrampoline) {
-                VirtualFree(entry.pTrampoline, 0, MEM_RELEASE);
-            }
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            /* Best effort */
-        }
+        RestoreHookSEH(&entry);
     }
 
     g_hooks.clear();
