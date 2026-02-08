@@ -1,0 +1,5 @@
+; BludHook.dll Module Definition File
+LIBRARY BludHook
+EXPORTS
+    ; No explicit exports - loaded via DLL injection (LoadLibrary)
+    ; DllMain handles all initialization

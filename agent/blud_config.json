@@ -1,0 +1,34 @@
+{
+    "logPath": "C:\\ProgramData\\BludEDR\\logs",
+    "logLevel": "INFO",
+    "enableHookDll": true,
+    "enableYara": true,
+    "enableEtw": true,
+    "enableNetworkMonitor": true,
+    "hookDllPath": "",
+    "yaraRulesPath": "",
+    "scoreThresholds": {
+        "log": 0,
+        "alert": 50,
+        "suspend": 80,
+        "terminate": 90
+    },
+    "scoreDecayHalfLifeSeconds": 300,
+    "parentScoreInheritance": 0.30,
+    "maxAlertsRetained": 1000,
+    "dashboardRefreshMs": 500,
+    "memoryScanIntervalMs": 2000,
+    "whitelistedProcesses": [
+        "system",
+        "smss.exe",
+        "csrss.exe",
+        "wininit.exe",
+        "services.exe",
+        "lsass.exe",
+        "svchost.exe",
+        "winlogon.exe",
+        "dwm.exe",
+        "msmpeng.exe",
+        "bludagent.exe"
+    ]
+}

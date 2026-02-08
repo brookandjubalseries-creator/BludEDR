@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A1B2C3D4-1111-2222-3333-444455557777}</ProjectGuid>
+    <RootNamespace>BludAgent</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <ProjectName>BludAgent</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <PropertyGroup>
+    <IntDir>$(Configuration)\obj\</IntDir>
+    <OutDir>$(SolutionDir)$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)inc;$(ProjectDir)..\shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <WarningLevel>Level4</WarningLevel>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>fltlib.lib;advapi32.lib;dbghelp.lib;psapi.lib;iphlpapi.lib;ws2_32.lib;tdh.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;WIN32_LEAN_AND_MEAN;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)inc;$(ProjectDir)..\shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <WarningLevel>Level4</WarningLevel>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <Optimization>MaxSpeed</Optimization>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>fltlib.lib;advapi32.lib;dbghelp.lib;psapi.lib;iphlpapi.lib;ws2_32.lib;tdh.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <OptimizeReferences>true</OptimizeReferences>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\service_controller.cpp" />
+    <ClCompile Include="src\driver_comm.cpp" />
+    <ClCompile Include="src\event_dispatcher.cpp" />
+    <ClCompile Include="src\process_tree.cpp" />
+    <ClCompile Include="src\ioc_scoring.cpp" />
+    <ClCompile Include="src\detection_engine.cpp" />
+    <ClCompile Include="src\lolbas_detector.cpp" />
+    <ClCompile Include="src\alert_manager.cpp" />
+    <ClCompile Include="src\config_manager.cpp" />
+    <ClCompile Include="src\logger.cpp" />
+    <ClCompile Include="src\console_dashboard.cpp" />
+    <ClCompile Include="src\injection_manager.cpp" />
+    <ClCompile Include="src\memory_scanner.cpp" />
+    <ClCompile Include="src\etw_consumer.cpp" />
+    <ClCompile Include="src\yara_scanner.cpp" />
+    <ClCompile Include="src\callstack_analyzer.cpp" />
+    <ClCompile Include="src\correlation_engine.cpp" />
+    <ClCompile Include="src\wfp_monitor.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="inc\agent.h" />
+    <ClInclude Include="inc\service_controller.h" />
+    <ClInclude Include="inc\driver_comm.h" />
+    <ClInclude Include="inc\event_dispatcher.h" />
+    <ClInclude Include="inc\process_tree.h" />
+    <ClInclude Include="inc\ioc_scoring.h" />
+    <ClInclude Include="inc\detection_engine.h" />
+    <ClInclude Include="inc\lolbas_detector.h" />
+    <ClInclude Include="inc\alert_manager.h" />
+    <ClInclude Include="inc\config_manager.h" />
+    <ClInclude Include="inc\logger.h" />
+    <ClInclude Include="inc\console_dashboard.h" />
+    <ClInclude Include="inc\injection_manager.h" />
+    <ClInclude Include="inc\memory_scanner.h" />
+    <ClInclude Include="inc\etw_consumer.h" />
+    <ClInclude Include="inc\yara_scanner.h" />
+    <ClInclude Include="inc\callstack_analyzer.h" />
+    <ClInclude Include="inc\correlation_engine.h" />
+    <ClInclude Include="inc\wfp_monitor.h" />
+    <ClInclude Include="..\shared\sentinel_shared.h" />
+    <ClInclude Include="..\shared\sentinel_events.h" />
+    <ClInclude Include="..\shared\sentinel_ioc.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

@@ -1,0 +1,44 @@
+# Build outputs
+Debug/
+Release/
+x64/
+*.obj
+*.pdb
+*.sys
+*.exe
+*.dll
+*.exp
+*.lib
+*.log
+*.tlog
+*.idb
+*.ipch
+*.pch
+*.ilk
+*.res
+*.manifest
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+ipch/
+
+# Build directories
+**/obj/
+**/bin/
+
+# WDK/Driver
+*.cer
+*.cat
+*.inf.setuplog
+
+# OS files
+Thumbs.db
+desktop.ini
+.DS_Store
